@@ -1,10 +1,17 @@
+use serde_json as sj;
+use std::collections::HashMap;
 use std::ffi::{c_void, CString};
 use std::mem::size_of;
 use std::ptr;
 use windows::core::{PCSTR, PSTR};
 use windows::Win32::Foundation::{BOOL, HANDLE};
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
+use windows::Win32::System::Console::*;
 use windows::Win32::System::Threading::*;
+
+// -----------------------------------------------------------------------------
+// StartupInformation
+// -----------------------------------------------------------------------------
 
 pub struct StartupInformation {
     pub desktop: Option<String>,
@@ -16,8 +23,9 @@ pub struct StartupInformation {
     pub x_count_chars: Option<u32>,
     pub y_count_chars: Option<u32>,
     pub fill_attribute: Option<u32>,
-    pub flags: Option<Vec<String>>,
-    pub flags_append: bool,
+    pub fill_attribute_append: Option<bool>,
+    pub flags: Option<u32>,
+    pub flags_append: Option<bool>,
     pub show_window: Option<u16>,
     pub stdin_handle: Option<isize>,
     pub stdout_handle: Option<isize>,
@@ -36,8 +44,9 @@ impl Default for StartupInformation {
             x_count_chars: None,
             y_count_chars: None,
             fill_attribute: None,
+            fill_attribute_append: None,
             flags: None,
-            flags_append: false,
+            flags_append: None,
             show_window: None,
             stdin_handle: None,
             stdout_handle: None,
@@ -47,104 +56,150 @@ impl Default for StartupInformation {
 }
 
 impl StartupInformation {
+    pub fn fattr_flagstr_to_u32(flagstr: &str) -> Option<u32> {
+        let resolver = HashMap::<&str, u32>::from([
+            ("FOREGROUND_BLUE", FOREGROUND_BLUE),
+            ("FOREGROUND_RED", FOREGROUND_RED),
+            ("FOREGROUND_GREEN", FOREGROUND_GREEN),
+            ("BACKGROUND_BLUE", BACKGROUND_BLUE),
+            ("BACKGROUND_RED", BACKGROUND_RED),
+            ("BACKGROUND_GREEN", BACKGROUND_GREEN),
+            ("BACKGROUND_INTENSITY", BACKGROUND_INTENSITY),
+            ("FOREGROUND_INTENSITY", FOREGROUND_INTENSITY),
+            ("COMMON_LVB_LEADING_BYTE", COMMON_LVB_LEADING_BYTE),
+            ("COMMON_LVB_TRAILING_BYT", COMMON_LVB_TRAILING_BYTE),
+            ("COMMON_LVB_GRID_HORIZONTAL", COMMON_LVB_GRID_HORIZONTAL),
+            ("COMMON_LVB_GRID_LVERTICAL", COMMON_LVB_GRID_LVERTICAL),
+            ("COMMON_LVB_GRID_RVERTICAL", COMMON_LVB_GRID_RVERTICAL),
+            ("COMMON_LVB_REVERSE_VIDEO", COMMON_LVB_REVERSE_VIDEO),
+            ("COMMON_LVB_UNDERSCORE", COMMON_LVB_UNDERSCORE),
+            ("COMMON_LVB_SBCSDBCS", COMMON_LVB_SBCSDBCS),
+        ]);
+
+        resolver.get(flagstr).map(|f| f.clone())
+    }
+
+    pub fn siwf_flagstr_to_u32(flagstr: &str) -> Option<u32> {
+        let resolver = std::collections::HashMap::<&str, STARTUPINFOW_FLAGS>::from([
+            ("STARTF_FORCEONFEEDBACK", STARTF_FORCEONFEEDBACK),
+            ("STARTF_FORCEOFFFEEDBACK", STARTF_FORCEOFFFEEDBACK),
+            ("STARTF_PREVENTPINNING", STARTF_PREVENTPINNING),
+            ("STARTF_RUNFULLSCREEN", STARTF_RUNFULLSCREEN),
+            ("STARTF_TITLEISAPPID", STARTF_TITLEISAPPID),
+            ("STARTF_TITLEISLINKNAME", STARTF_TITLEISLINKNAME),
+            ("STARTF_UNTRUSTEDSOURCE", STARTF_UNTRUSTEDSOURCE),
+            ("STARTF_USECOUNTCHARS", STARTF_USECOUNTCHARS),
+            ("STARTF_USEFILLATTRIBUTE", STARTF_USEFILLATTRIBUTE),
+            ("STARTF_USEHOTKEY", STARTF_USEHOTKEY),
+            ("STARTF_USEPOSITION", STARTF_USEPOSITION),
+            ("STARTF_USESHOWWINDOW", STARTF_USESHOWWINDOW),
+            ("STARTF_USESIZE", STARTF_USESIZE),
+            ("STARTF_USESTDHANDLES", STARTF_USESTDHANDLES),
+        ]);
+
+        resolver.get(flagstr).map(|f| f.0)
+    }
+
+    pub fn from_json(json: &sj::Map<String, sj::Value>) -> StartupInformation {
+        StartupInformation {
+            desktop: json["desktop"].as_str().map(|s| s.to_owned()),
+            title: json["title"].as_str().map(|s| s.to_owned()),
+
+            x: json["x"].as_u64().map(|i| i as u32),
+            y: json["y"].as_u64().map(|i| i as u32),
+
+            x_size: json["x_size"].as_u64().map(|i| i as u32),
+            y_size: json["y_size"].as_u64().map(|i| i as u32),
+
+            x_count_chars: json["x_count_chars"].as_u64().map(|i| i as u32),
+            y_count_chars: json["y_count_chars"].as_u64().map(|i| i as u32),
+
+            fill_attribute: json["fill_attribute"].as_array().map(|array| {
+                let nativized_array = array.iter().filter_map(|e| {
+                    e.as_str().map_or(e.as_u64().map(|i| i as u32), |e| {
+                        StartupInformation::fattr_flagstr_to_u32(e).map(|i| i as u32)
+                    })
+                });
+
+                nativized_array.fold(0, |acc, e| acc | e)
+            }),
+
+            fill_attribute_append: json["fill_attribute_append"].as_bool(),
+
+            flags: json["flags"].as_array().map(|array| {
+                let nativized_array = array.iter().filter_map(|e| {
+                    e.as_str().map_or(e.as_u64().map(|i| i as u32), |e| {
+                        StartupInformation::siwf_flagstr_to_u32(e)
+                    })
+                });
+
+                nativized_array.fold(0, |acc, e| acc | e)
+            }),
+
+            flags_append: json["flags_append"].as_bool(),
+
+            show_window: json["show_window"].as_u64().map(|i| i as u16),
+
+            stdin_handle: json["stdin_handle"].as_u64().map(|i| i as isize),
+            stdout_handle: json["stdout_handle"].as_u64().map(|i| i as isize),
+            stderr_handle: json["stderr_handle"].as_u64().map(|i| i as isize),
+
+            ..Default::default()
+        }
+    }
+
     pub fn as_native(&self) -> STARTUPINFOA {
         let mut si = STARTUPINFOA {
             cb: size_of::<STARTUPINFOA>() as u32,
             ..Default::default()
         };
 
-        if self.desktop.is_some() {
-            si.lpDesktop = PSTR(
-                CString::new(self.desktop.to_owned().unwrap())
-                    .unwrap()
-                    .into_raw() as *mut u8,
-            );
-        }
+        self.desktop.as_ref().map(|str| {
+            CString::new(str.to_owned()).map(|cstr| si.lpDesktop = PSTR(cstr.into_raw() as *mut u8))
+        });
 
-        if self.title.is_some() {
-            si.lpTitle = PSTR(
-                CString::new(self.title.to_owned().unwrap())
-                    .unwrap()
-                    .into_raw() as *mut u8,
-            );
-        }
+        self.title.as_ref().map(|str| {
+            CString::new(str.to_owned()).map(|cstr| si.lpTitle = PSTR(cstr.into_raw() as *mut u8))
+        });
 
-        if self.x.is_some() {
-            si.dwX = self.x.unwrap()
-        }
+        self.x.map(|x| si.dwX = x);
+        self.y.map(|y| si.dwY = y);
 
-        if self.y.is_some() {
-            si.dwY = self.y.unwrap()
-        }
+        self.x_size.map(|x| si.dwXSize = x);
+        self.y_size.map(|y| si.dwYSize = y);
 
-        if self.x_size.is_some() {
-            si.dwXSize = self.x_size.unwrap()
-        }
+        self.x_count_chars.map(|x| si.dwXCountChars = x);
+        self.y_count_chars.map(|y| si.dwYCountChars = y);
 
-        if self.y_size.is_some() {
-            si.dwYSize = self.y_size.unwrap()
-        }
-
-        if self.x_count_chars.is_some() {
-            si.dwXCountChars = self.x_count_chars.unwrap()
-        }
-
-        if self.y_count_chars.is_some() {
-            si.dwYCountChars = self.y_count_chars.unwrap()
-        }
-
-        if self.fill_attribute.is_some() {
-            si.dwFillAttribute = self.fill_attribute.unwrap()
-        }
-
-        if self.flags.is_some() {
-            let resolver = std::collections::HashMap::<&str, STARTUPINFOW_FLAGS>::from([
-                ("STARTF_FORCEONFEEDBACK", STARTF_FORCEONFEEDBACK),
-                ("STARTF_FORCEOFFFEEDBACK", STARTF_FORCEOFFFEEDBACK),
-                ("STARTF_PREVENTPINNING", STARTF_PREVENTPINNING),
-                ("STARTF_RUNFULLSCREEN", STARTF_RUNFULLSCREEN),
-                ("STARTF_TITLEISAPPID", STARTF_TITLEISAPPID),
-                ("STARTF_TITLEISLINKNAME", STARTF_TITLEISLINKNAME),
-                ("STARTF_UNTRUSTEDSOURCE", STARTF_UNTRUSTEDSOURCE),
-                ("STARTF_USECOUNTCHARS", STARTF_USECOUNTCHARS),
-                ("STARTF_USEFILLATTRIBUTE", STARTF_USEFILLATTRIBUTE),
-                ("STARTF_USEHOTKEY", STARTF_USEHOTKEY),
-                ("STARTF_USEPOSITION", STARTF_USEPOSITION),
-                ("STARTF_USESHOWWINDOW", STARTF_USESHOWWINDOW),
-                ("STARTF_USESIZE", STARTF_USESIZE),
-                ("STARTF_USESTDHANDLES", STARTF_USESTDHANDLES),
-            ]);
-
-            if !self.flags_append {
-                si.dwFlags.0 = 0;
+        self.fill_attribute.map(|fattr| {
+            if self.fill_attribute_append.unwrap_or(false) {
+                si.dwFillAttribute |= fattr;
+            } else {
+                si.dwFillAttribute = fattr;
             }
+        });
 
-            for flag in self.flags.to_owned().unwrap() {
-                if resolver.contains_key(flag.as_str()) {
-                    si.dwFlags |= *resolver.get(flag.as_str()).unwrap()
-                }
+        self.flags.map(|flags| {
+            if self.flags_append.unwrap_or(false) {
+                si.dwFlags.0 |= flags;
+            } else {
+                si.dwFlags.0 = flags;
             }
-        }
+        });
 
-        if self.show_window.is_some() {
-            si.wShowWindow = self.show_window.unwrap()
-        }
+        self.show_window.map(|sw| si.wShowWindow = sw);
 
-        if self.stdin_handle.is_some() {
-            si.hStdInput = HANDLE(self.stdin_handle.unwrap())
-        }
-
-        if self.stdout_handle.is_some() {
-            si.hStdOutput = HANDLE(self.stdout_handle.unwrap())
-        }
-
-        if self.stderr_handle.is_some() {
-            si.hStdError = HANDLE(self.stderr_handle.unwrap())
-        }
+        self.stdin_handle.map(|h| si.hStdInput = HANDLE(h));
+        self.stdout_handle.map(|h| si.hStdOutput = HANDLE(h));
+        self.stderr_handle.map(|h| si.hStdError = HANDLE(h));
 
         return si;
     }
 }
+
+// -----------------------------------------------------------------------------
+// SecurityAttributes
+// -----------------------------------------------------------------------------
 
 pub struct SecurityAttributes {
     pub security_descriptor: Option<isize>,
@@ -161,23 +216,33 @@ impl Default for SecurityAttributes {
 }
 
 impl SecurityAttributes {
+    pub fn from_json(json: &sj::Map<String, sj::Value>) -> SecurityAttributes {
+        SecurityAttributes {
+            security_descriptor: json["security_descriptor"].as_u64().map(|i| i as isize),
+            inherit_handle: json["inherit_handle"].as_bool(),
+            ..Default::default()
+        }
+    }
+
     pub fn as_native(&self) -> SECURITY_ATTRIBUTES {
         let mut sa = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             ..Default::default()
         };
 
-        if self.security_descriptor.is_some() {
-            sa.lpSecurityDescriptor = self.security_descriptor.unwrap() as *mut c_void;
-        }
+        self.security_descriptor
+            .map(|sd| sa.lpSecurityDescriptor = sd as *mut c_void);
 
-        if self.inherit_handle.is_some() {
-            sa.bInheritHandle = BOOL(if self.inherit_handle.unwrap() { 1 } else { 0 });
-        }
+        self.inherit_handle
+            .map(|ih| sa.bInheritHandle = BOOL(if ih { 1 } else { 0 }));
 
         return sa;
     }
 }
+
+// -----------------------------------------------------------------------------
+// NativeCreationParams
+// -----------------------------------------------------------------------------
 
 pub struct NativeCreationParams {
     pub process_attributes: SECURITY_ATTRIBUTES,
@@ -206,13 +271,17 @@ impl Default for NativeCreationParams {
     }
 }
 
+// -----------------------------------------------------------------------------
+// CreationParams
+// -----------------------------------------------------------------------------
+
 pub struct CreationParams {
     pub process_attributes: Option<SecurityAttributes>,
     pub thread_attributes: Option<SecurityAttributes>,
     pub inherit_handles: Option<bool>,
-    pub creation_flags: Option<Vec<String>>,
-    pub creation_flags_addmode: bool,
-    pub environment: Option<String>,
+    pub creation_flags: Option<u32>,
+    pub creation_flags_append: Option<bool>,
+    pub environment: Option<isize>,
     pub current_directory: Option<String>,
     pub startup_info: Option<StartupInformation>,
 }
@@ -224,7 +293,7 @@ impl Default for CreationParams {
             thread_attributes: None,
             inherit_handles: None,
             creation_flags: None,
-            creation_flags_addmode: false,
+            creation_flags_append: None,
             environment: None,
             current_directory: None,
             startup_info: None,
@@ -233,72 +302,100 @@ impl Default for CreationParams {
 }
 
 impl CreationParams {
+    pub fn cf_flagstr_to_u32(flagstr: &str) -> Option<u32> {
+        let resolver = std::collections::HashMap::<&str, PROCESS_CREATION_FLAGS>::from([
+            ("CREATE_BREAKAWAY_FROM_JOB", CREATE_BREAKAWAY_FROM_JOB),
+            ("CREATE_DEFAULT_ERROR_MODE", CREATE_DEFAULT_ERROR_MODE),
+            ("CREATE_NEW_CONSOLE", CREATE_NEW_CONSOLE),
+            ("CREATE_NEW_PROCESS_GROUP", CREATE_NEW_PROCESS_GROUP),
+            ("CREATE_NO_WINDOW", CREATE_NO_WINDOW),
+            ("CREATE_PROTECTED_PROCESS", CREATE_PROTECTED_PROCESS),
+            (
+                "CREATE_PRESERVE_CODE_AUTHZ_LEVEL",
+                CREATE_PRESERVE_CODE_AUTHZ_LEVEL,
+            ),
+            ("CREATE_SECURE_PROCESS", CREATE_SECURE_PROCESS),
+            ("CREATE_SEPARATE_WOW_VDM", CREATE_SEPARATE_WOW_VDM),
+            ("CREATE_SHARED_WOW_VDM", CREATE_SHARED_WOW_VDM),
+            ("CREATE_SUSPENDED", CREATE_SUSPENDED),
+            ("CREATE_UNICODE_ENVIRONMENT", CREATE_UNICODE_ENVIRONMENT),
+            ("DEBUG_ONLY_THIS_PROCESS", DEBUG_ONLY_THIS_PROCESS),
+            ("DEBUG_PROCESS", DEBUG_PROCESS),
+            ("DETACHED_PROCESS", DETACHED_PROCESS),
+            ("EXTENDED_STARTUPINFO_PRESENT", EXTENDED_STARTUPINFO_PRESENT),
+            ("INHERIT_PARENT_AFFINITY", INHERIT_PARENT_AFFINITY),
+        ]);
+
+        resolver.get(flagstr).map(|s| s.0)
+    }
+
+    pub fn from_json(json: &sj::Map<String, sj::Value>) -> CreationParams {
+        let mut creation_params = CreationParams::default();
+
+        creation_params.process_attributes = json["process_attributes"]
+            .as_object()
+            .map(|obj| SecurityAttributes::from_json(obj));
+
+        creation_params.thread_attributes = json["thread_attributes"]
+            .as_object()
+            .map(|obj| SecurityAttributes::from_json(obj));
+
+        creation_params.inherit_handles = json["inherit_handles"].as_bool();
+
+        creation_params.creation_flags = json["flags"].as_array().map(|array| {
+            let nativized_array = array.iter().filter_map(|e| {
+                e.as_str().map_or(e.as_u64().map(|i| i as u32), |e| {
+                    CreationParams::cf_flagstr_to_u32(e)
+                })
+            });
+
+            nativized_array.fold(0, |acc, e| acc | e)
+        });
+
+        creation_params.creation_flags_append = json["creation_flags_append"].as_bool();
+
+        creation_params.environment = json["environment"].as_i64().map(|i| i as isize);
+
+        creation_params.current_directory =
+            json["current_directory"].as_str().map(|s| String::from(s));
+
+        creation_params.startup_info = json["startup_info"]
+            .as_object()
+            .map(|o| StartupInformation::from_json(o));
+
+        return creation_params;
+    }
+
     pub fn as_native(&self) -> NativeCreationParams {
         let mut np = NativeCreationParams::default();
 
-        if self.process_attributes.is_some() {
-            np.process_attributes = self.process_attributes.unwrap().as_native();
-        }
+        self.process_attributes
+            .as_ref()
+            .map(|pa| np.process_attributes = pa.as_native());
 
-        if self.thread_attributes.is_some() {
-            np.thread_attributes = self.thread_attributes.unwrap().as_native();
-        }
+        self.thread_attributes
+            .as_ref()
+            .map(|ta| np.thread_attributes = ta.as_native());
 
-        if self.inherit_handles.is_some() {
-            np.inherit_handles = BOOL(if self.inherit_handles.unwrap() { 1 } else { 0 });
-        }
+        self.inherit_handles
+            .map(|ih| np.inherit_handles = BOOL(if ih { 1 } else { 0 }));
 
-        if self.creation_flags.is_some() {
-            let resolver = std::collections::HashMap::<&str, PROCESS_CREATION_FLAGS>::from([
-                ("CREATE_BREAKAWAY_FROM_JOB", CREATE_BREAKAWAY_FROM_JOB),
-                ("CREATE_DEFAULT_ERROR_MODE", CREATE_DEFAULT_ERROR_MODE),
-                ("CREATE_NEW_CONSOLE", CREATE_NEW_CONSOLE),
-                ("CREATE_NEW_PROCESS_GROUP", CREATE_NEW_PROCESS_GROUP),
-                ("CREATE_NO_WINDOW", CREATE_NO_WINDOW),
-                ("CREATE_PROTECTED_PROCESS", CREATE_PROTECTED_PROCESS),
-                (
-                    "CREATE_PRESERVE_CODE_AUTHZ_LEVEL",
-                    CREATE_PRESERVE_CODE_AUTHZ_LEVEL,
-                ),
-                ("CREATE_SECURE_PROCESS", CREATE_SECURE_PROCESS),
-                ("CREATE_SEPARATE_WOW_VDM", CREATE_SEPARATE_WOW_VDM),
-                ("CREATE_SHARED_WOW_VDM", CREATE_SHARED_WOW_VDM),
-                ("CREATE_SUSPENDED", CREATE_SUSPENDED),
-                ("CREATE_UNICODE_ENVIRONMENT", CREATE_UNICODE_ENVIRONMENT),
-                ("DEBUG_ONLY_THIS_PROCESS", DEBUG_ONLY_THIS_PROCESS),
-                ("DEBUG_PROCESS", DEBUG_PROCESS),
-                ("DETACHED_PROCESS", DETACHED_PROCESS),
-                ("EXTENDED_STARTUPINFO_PRESENT", EXTENDED_STARTUPINFO_PRESENT),
-                ("INHERIT_PARENT_AFFINITY", INHERIT_PARENT_AFFINITY),
-            ]);
+        self.creation_flags.map(|cf| {
+            np.creation_flags = PROCESS_CREATION_FLAGS(cf);
+        });
 
-            if !self.creation_flags_addmode {
-                np.creation_flags.0 = 0;
-            }
+        self.environment.map(|e| {
+            np.environment = e as *mut c_void;
+        });
 
-            for flag in self.creation_flags.unwrap() {
-                if resolver.contains_key(flag.as_str()) {
-                    np.creation_flags |= *resolver.get(flag.as_str()).unwrap()
-                }
-            }
-        }
+        self.current_directory.as_ref().map(|cd| {
+            CString::new(cd.to_owned())
+                .map(|cs| np.current_directory = PCSTR(cs.into_raw() as *const u8))
+        });
 
-        // This is not correct
-        if self.environment.is_some() {
-            // np.environment = self.environment.unwrap().as_ptr() as *mut c_void;
-        }
-
-        if self.current_directory.is_some() {
-            np.current_directory = PCSTR(
-                CString::new(self.current_directory.unwrap())
-                    .unwrap()
-                    .into_raw() as *const u8,
-            );
-        }
-
-        if self.startup_info.is_some() {
-            np.startup_info = self.startup_info.unwrap().as_native();
-        }
+        self.startup_info.as_ref().map(|si| {
+            np.startup_info = si.as_native();
+        });
 
         return np;
     }
