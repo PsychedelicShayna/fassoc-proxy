@@ -13,6 +13,7 @@ use windows::Win32::System::Threading::*;
 // StartupInformation
 // -----------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct StartupInformation {
     pub desktop: Option<String>,
     pub title: Option<String>,
@@ -102,31 +103,57 @@ impl StartupInformation {
 
     pub fn from_json(json: &sj::Map<String, sj::Value>) -> StartupInformation {
         StartupInformation {
-            desktop: json["desktop"].as_str().map(|s| s.to_owned()),
-            title: json["title"].as_str().map(|s| s.to_owned()),
+            desktop: json
+                .get("desktop")
+                .and_then(|jv| jv.as_str())
+                .map(|s| s.to_owned()),
 
-            x: json["x"].as_u64().map(|i| i as u32),
-            y: json["y"].as_u64().map(|i| i as u32),
+            title: json
+                .get("title")
+                .and_then(|jv| jv.as_str())
+                .map(|s| s.to_owned()),
 
-            x_size: json["x_size"].as_u64().map(|i| i as u32),
-            y_size: json["y_size"].as_u64().map(|i| i as u32),
+            x: json.get("x").and_then(|jv| jv.as_u64()).map(|i| i as u32),
+            y: json.get("y").and_then(|jv| jv.as_u64()).map(|i| i as u32),
 
-            x_count_chars: json["x_count_chars"].as_u64().map(|i| i as u32),
-            y_count_chars: json["y_count_chars"].as_u64().map(|i| i as u32),
+            x_size: json
+                .get("x_size")
+                .and_then(|jv| jv.as_u64())
+                .map(|i| i as u32),
 
-            fill_attribute: json["fill_attribute"].as_array().map(|array| {
-                let nativized_array = array.iter().filter_map(|e| {
-                    e.as_str().map_or(e.as_u64().map(|i| i as u32), |e| {
-                        StartupInformation::fattr_flagstr_to_u32(e).map(|i| i as u32)
-                    })
-                });
+            y_size: json
+                .get("y_size")
+                .and_then(|jv| jv.as_u64())
+                .map(|i| i as u32),
 
-                nativized_array.fold(0, |acc, e| acc | e)
-            }),
+            x_count_chars: json
+                .get("x_count_chars")
+                .and_then(|jv| jv.as_u64())
+                .map(|i| i as u32),
 
-            fill_attribute_append: json["fill_attribute_append"].as_bool(),
+            y_count_chars: json
+                .get("y_count_chars")
+                .and_then(|jv| jv.as_u64())
+                .map(|i| i as u32),
 
-            flags: json["flags"].as_array().map(|array| {
+            fill_attribute: json
+                .get("fill_attribute")
+                .and_then(|jv| jv.as_array())
+                .map(|array| {
+                    let nativized_array = array.iter().filter_map(|e| {
+                        e.as_str().map_or(e.as_u64().map(|i| i as u32), |e| {
+                            StartupInformation::fattr_flagstr_to_u32(e).map(|i| i as u32)
+                        })
+                    });
+
+                    nativized_array.fold(0, |acc, e| acc | e)
+                }),
+
+            fill_attribute_append: json
+                .get("fill_attribute_append")
+                .and_then(|jv| jv.as_bool()),
+
+            flags: json.get("flags").and_then(|jv| jv.as_array()).map(|array| {
                 let nativized_array = array.iter().filter_map(|e| {
                     e.as_str().map_or(e.as_u64().map(|i| i as u32), |e| {
                         StartupInformation::siwf_flagstr_to_u32(e)
@@ -136,13 +163,25 @@ impl StartupInformation {
                 nativized_array.fold(0, |acc, e| acc | e)
             }),
 
-            flags_append: json["flags_append"].as_bool(),
+            flags_append: json.get("flags_append").and_then(|jv| jv.as_bool()),
 
-            show_window: json["show_window"].as_u64().map(|i| i as u16),
+            show_window: json
+                .get("show_window")
+                .and_then(|jv| jv.as_u64())
+                .map(|i| i as u16),
 
-            stdin_handle: json["stdin_handle"].as_u64().map(|i| i as isize),
-            stdout_handle: json["stdout_handle"].as_u64().map(|i| i as isize),
-            stderr_handle: json["stderr_handle"].as_u64().map(|i| i as isize),
+            stdin_handle: json
+                .get("stdin_handle")
+                .and_then(|jv| jv.as_u64())
+                .map(|i| i as isize),
+            stdout_handle: json
+                .get("stdout_handle")
+                .and_then(|jv| jv.as_u64())
+                .map(|i| i as isize),
+            stderr_handle: json
+                .get("stderr_handle")
+                .and_then(|jv| jv.as_u64())
+                .map(|i| i as isize),
 
             ..Default::default()
         }
@@ -201,6 +240,7 @@ impl StartupInformation {
 // SecurityAttributes
 // -----------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct SecurityAttributes {
     pub security_descriptor: Option<isize>,
     pub inherit_handle: Option<bool>,
@@ -218,8 +258,12 @@ impl Default for SecurityAttributes {
 impl SecurityAttributes {
     pub fn from_json(json: &sj::Map<String, sj::Value>) -> SecurityAttributes {
         SecurityAttributes {
-            security_descriptor: json["security_descriptor"].as_u64().map(|i| i as isize),
-            inherit_handle: json["inherit_handle"].as_bool(),
+            security_descriptor: json
+                .get("security_descriptor")
+                .and_then(|jv| jv.as_u64())
+                .map(|i| i as isize),
+
+            inherit_handle: json.get("inherit_handle").and_then(|jv| jv.as_bool()),
             ..Default::default()
         }
     }
@@ -241,10 +285,11 @@ impl SecurityAttributes {
 }
 
 // -----------------------------------------------------------------------------
-// NativeCreationParams
+// NativeCreationExtras
 // -----------------------------------------------------------------------------
 
-pub struct NativeCreationParams {
+#[derive(Debug)]
+pub struct NativeCreationExtras {
     pub process_attributes: SECURITY_ATTRIBUTES,
     pub thread_attributes: SECURITY_ATTRIBUTES,
     pub inherit_handles: BOOL,
@@ -254,9 +299,9 @@ pub struct NativeCreationParams {
     pub startup_info: STARTUPINFOA,
 }
 
-impl Default for NativeCreationParams {
-    fn default() -> NativeCreationParams {
-        NativeCreationParams {
+impl Default for NativeCreationExtras {
+    fn default() -> NativeCreationExtras {
+        NativeCreationExtras {
             process_attributes: SECURITY_ATTRIBUTES::default(),
             thread_attributes: SECURITY_ATTRIBUTES::default(),
             inherit_handles: BOOL(0),
@@ -272,36 +317,35 @@ impl Default for NativeCreationParams {
 }
 
 // -----------------------------------------------------------------------------
-// CreationParams
+// CreationExtras
 // -----------------------------------------------------------------------------
 
-pub struct CreationParams {
+#[derive(Debug)]
+pub struct CreationExtras {
     pub process_attributes: Option<SecurityAttributes>,
     pub thread_attributes: Option<SecurityAttributes>,
     pub inherit_handles: Option<bool>,
     pub creation_flags: Option<u32>,
     pub creation_flags_append: Option<bool>,
     pub environment: Option<isize>,
-    pub current_directory: Option<String>,
     pub startup_info: Option<StartupInformation>,
 }
 
-impl Default for CreationParams {
-    fn default() -> CreationParams {
-        CreationParams {
+impl Default for CreationExtras {
+    fn default() -> CreationExtras {
+        CreationExtras {
             process_attributes: None,
             thread_attributes: None,
             inherit_handles: None,
             creation_flags: None,
             creation_flags_append: None,
             environment: None,
-            current_directory: None,
             startup_info: None,
         }
     }
 }
 
-impl CreationParams {
+impl CreationExtras {
     pub fn cf_flagstr_to_u32(flagstr: &str) -> Option<u32> {
         let resolver = std::collections::HashMap::<&str, PROCESS_CREATION_FLAGS>::from([
             ("CREATE_BREAKAWAY_FROM_JOB", CREATE_BREAKAWAY_FROM_JOB),
@@ -329,45 +373,53 @@ impl CreationParams {
         resolver.get(flagstr).map(|s| s.0)
     }
 
-    pub fn from_json(json: &sj::Map<String, sj::Value>) -> CreationParams {
-        let mut creation_params = CreationParams::default();
+    pub fn from_json(json: &sj::Map<String, sj::Value>) -> CreationExtras {
+        let mut creation_params = CreationExtras::default();
 
-        creation_params.process_attributes = json["process_attributes"]
-            .as_object()
+        creation_params.process_attributes = json
+            .get("process_attributes")
+            .and_then(|jv| jv.as_object())
             .map(|obj| SecurityAttributes::from_json(obj));
 
-        creation_params.thread_attributes = json["thread_attributes"]
-            .as_object()
+        creation_params.thread_attributes = json
+            .get("thread_attributes")
+            .and_then(|jv| jv.as_object())
             .map(|obj| SecurityAttributes::from_json(obj));
 
-        creation_params.inherit_handles = json["inherit_handles"].as_bool();
+        creation_params.inherit_handles = json.get("inherit_handles").and_then(|jv| jv.as_bool());
 
-        creation_params.creation_flags = json["flags"].as_array().map(|array| {
-            let nativized_array = array.iter().filter_map(|e| {
-                e.as_str().map_or(e.as_u64().map(|i| i as u32), |e| {
-                    CreationParams::cf_flagstr_to_u32(e)
-                })
+        creation_params.creation_flags = json
+            .get("creation_flags")
+            .and_then(|jv| jv.as_array())
+            .map(|array| {
+                let nativized_array = array.iter().filter_map(|e| {
+                    e.as_str().map_or(e.as_u64().map(|i| i as u32), |e| {
+                        CreationExtras::cf_flagstr_to_u32(e)
+                    })
+                });
+
+                nativized_array.fold(0, |acc, e| acc | e)
             });
 
-            nativized_array.fold(0, |acc, e| acc | e)
-        });
+        creation_params.creation_flags_append = json
+            .get("creation_flags_append")
+            .and_then(|jv| jv.as_bool());
 
-        creation_params.creation_flags_append = json["creation_flags_append"].as_bool();
+        creation_params.environment = json
+            .get("environment")
+            .and_then(|jv| jv.as_i64())
+            .map(|i| i as isize);
 
-        creation_params.environment = json["environment"].as_i64().map(|i| i as isize);
-
-        creation_params.current_directory =
-            json["current_directory"].as_str().map(|s| String::from(s));
-
-        creation_params.startup_info = json["startup_info"]
-            .as_object()
+        creation_params.startup_info = json
+            .get("startup_info")
+            .and_then(|jv| jv.as_object())
             .map(|o| StartupInformation::from_json(o));
 
         return creation_params;
     }
 
-    pub fn as_native(&self) -> NativeCreationParams {
-        let mut np = NativeCreationParams::default();
+    pub fn as_native(&self) -> NativeCreationExtras {
+        let mut np = NativeCreationExtras::default();
 
         self.process_attributes
             .as_ref()
@@ -386,11 +438,6 @@ impl CreationParams {
 
         self.environment.map(|e| {
             np.environment = e as *mut c_void;
-        });
-
-        self.current_directory.as_ref().map(|cd| {
-            CString::new(cd.to_owned())
-                .map(|cs| np.current_directory = PCSTR(cs.into_raw() as *const u8))
         });
 
         self.startup_info.as_ref().map(|si| {

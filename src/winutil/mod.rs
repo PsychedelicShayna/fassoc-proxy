@@ -1,64 +1,68 @@
 use std::ffi::CString;
-use std::mem::size_of;
-use std::ptr;
-
-use windows::Win32::Security::SECURITY_ATTRIBUTES;
-
-use windows::Win32::System::Threading::{
-    CreateProcessA, CREATE_NEW_CONSOLE, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOA,
-};
-
 use windows::core::{PCSTR, PSTR};
+use windows::Win32::System::Threading::{CreateProcessA, PROCESS_INFORMATION};
 
 pub mod structs;
 use structs::*;
 
-pub fn create_process_param(path: String, args: String, params: CreationParams) {
-    let path_cstr = PCSTR(CString::new(path).unwrap().into_raw() as *const u8);
-    let args_cstr = PSTR(CString::new(args).unwrap().into_raw() as *mut u8);
+pub fn create_process(path: String, args: String, cd: String, extras: NativeCreationExtras) {
+    let path_cstr = PCSTR(match CString::new(path.to_owned()) {
+        Ok(cstr) => cstr.into_raw() as *mut u8,
+        Err(error) => {
+            log::error!(
+                "Could turn the command string ({}) into a native CString! - {}",
+                path,
+                error
+            );
+            panic!();
+        }
+    });
 
-    let native_params = params.as_native();
+    let args_cstr = PSTR(match CString::new(args.to_owned()) {
+        Ok(cstr) => cstr.into_raw() as *mut u8,
+        Err(error) => {
+            log::error!(
+                "Could turn the argument string ({}) into a native CString! - {}",
+                args,
+                error
+            );
+            panic!();
+        }
+    });
+
+    let cd_cstr = PCSTR(match CString::new(cd.to_owned()) {
+        Ok(cstr) => cstr.into_raw() as *mut u8,
+        Err(error) => {
+            log::error!(
+                "Could turn the current directory / cd string ({}) string into a native CString! - {}",
+                args,
+                error
+            );
+            panic!();
+        }
+    });
 
     unsafe {
-        CreateProcessA(
+        let mut process_information = PROCESS_INFORMATION::default();
+
+        let result = CreateProcessA(
             path_cstr,
             args_cstr,
-            &native_params.process_attributes,
-            &native_params.thread_attributes,
-            native_params.inherit_handles,
-            native_params.creation_flags,
-            native_params.environment,
-            native_params.current_directory,
-            &native_params.startup_info,
-            &mut PROCESS_INFORMATION::default(),
+            &extras.process_attributes,
+            &extras.thread_attributes,
+            extras.inherit_handles,
+            extras.creation_flags,
+            extras.environment,
+            cd_cstr,
+            &extras.startup_info,
+            &mut process_information,
         );
-    }
-}
 
-pub fn create_process(path: String, args: String) {
-    let path_cstr = PCSTR(CString::new(path).unwrap().into_raw() as *const u8);
-    let args_cstr = PSTR(CString::new(args).unwrap().into_raw() as *mut u8);
+        if result.0 == 0 {
+            log::error!("WinAPI reported that the process creation failed (result == 0)");
+        }
 
-    // let working_directory = match override_wd {
-    //     Some(wd) => PCSTR(CString::new(wd).unwrap().into_raw() as *const u8),
-    //     None => PCSTR::null(),
-    // };
-
-    unsafe {
-        CreateProcessA(
-            path_cstr,
-            args_cstr,
-            &SECURITY_ATTRIBUTES::default(),
-            &SECURITY_ATTRIBUTES::default(),
-            false,
-            PROCESS_CREATION_FLAGS::default() | CREATE_NEW_CONSOLE,
-            ptr::null(),
-            PCSTR::null(), // working_directory,
-            &STARTUPINFOA {
-                cb: size_of::<STARTUPINFOA>() as u32,
-                ..Default::default()
-            },
-            &mut PROCESS_INFORMATION::default(),
-        );
+        log::debug!("CreateProcessA returned: {:?}", result);
+        log::debug!("Process Information ---------\n{:?}", process_information);
     }
 }

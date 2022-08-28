@@ -3,6 +3,7 @@
 
 use regex::Regex;
 use serde_json as sj;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
@@ -10,16 +11,9 @@ use std::path::Path;
 
 pub mod winutil;
 use winutil::structs::*;
-use winutil::*;
 
 struct FileLogger;
 static FILE_LOGGER: FileLogger = FileLogger;
-
-struct ProxyRule {
-    patterns: Vec<String>,
-    command: String,
-    arguments: String,
-}
 
 impl log::Log for FileLogger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
@@ -86,50 +80,92 @@ fn read_rules_json(path: String) -> Result<sj::Value, String> {
     return Ok(parsed_json);
 }
 
-fn search_for_rule(mapping_value: sj::Value, rules: sj::Value, file_name: &str) -> Option<String> {
-    let candidate_rule_names: Vec<&str> = match mapping_value.as_array() {
-        Some(rule_names) => rule_names.iter().filter_map(|e|e.as_str()).collect(),
-        None => return None
+fn rule_matches_file(rule_name: &str, rule: &sj::Value, file_name: &str) -> bool {
+    let regex_jv = match rule.get("match") {
+        Some(jv) => jv,
+        None => {
+            log::debug!(
+                "Could not find a \"match\" key inside of the rule \"{}\"",
+                rule_name
+            );
+
+            return true;
+        }
     };
 
-    
-    let first_matching_rule = candidate_rule_names.iter().find(|e| {
-        let rule_name: &str = e.to_owned();
-        
-        // Get the rule with name rule_name from rules HashMap.
-        let rule = match rules.get(rule_name) {
-            Some(rule) => rule,
-            None => return false
-        };
-        
-        // Try to extract the array of RegEx patterns from the rule.
-        let regex_patterns = match rule["match"].as_array() {
-            Some(patterns) => patterns,
-            None => return false
-        };
+    let matcher = |regex_str: &str| -> bool {
+        let is_match = match Regex::new(regex_str) {
+            Ok(regex) => regex.is_match(file_name),
 
-        // Return true if any of the RegEx patterns match the target file.
-        regex_patterns.iter().any(|regstr| {
-            let regex_pattern_str = match regstr.as_str() {
-                Some(pattern) => pattern,
-                None => return false
-            };
+            Err(error) => {
+                log::error!(
+                    "The RegEx pattern \"{}\" belonging to rule \"{}\" failed to compile - {}",
+                    regex_str,
+                    rule_name,
+                    error
+                );
 
-            match Regex::new(regex_pattern_str) {
-                Ok(regex) => regex.is_match(file_name),
-
-                Err(error) => {
-                    log::error!("The RegEx pattern \"{}\" belonging to rule \"{}\" failed to compile - {}", regex_pattern_str, rule_name, error);
-                    return false;
-                }
+                return false;
             }
-        })
+        };
+
+        log::debug!(
+            "Evaluating rule \"{}\"'s RegEx pattern \"{}\" on \"{}\" gave: {} ",
+            rule_name,
+            regex_str,
+            file_name,
+            is_match
+        );
+
+        is_match
+    };
+
+    match regex_jv.as_str() {
+        Some(regex_str) => matcher(regex_str),
+        None => match regex_jv.as_array() {
+            Some(regex_arr) => regex_arr
+                .iter()
+                .any(|elem| elem.as_str().map_or(false, |regex_str| matcher(regex_str))),
+
+            None => {
+                log::error!(
+                    "The \"match\" key inside of the rule \"{}\" was not a string or an array!",
+                    rule_name
+                );
+
+                false
+            }
+        },
+    }
+}
+
+fn find_matching_rule(
+    allowed_rule_keys: &Vec<String>,
+    rules_data: &HashMap<String, sj::Value>,
+    target_file_name: &str,
+) -> Option<String> {
+    let first_matching_rule = allowed_rule_keys.iter().find(|e| {
+        let rule_name: &str = e.to_owned();
+
+        // Get the rule with name rule_name from rules HashMap.
+        let rule: &sj::Value = match rules_data.get(rule_name) {
+            Some(rule) => rule,
+            None => return false,
+        };
+
+        let is_match = rule_matches_file(rule_name, rule, target_file_name);
+
+        log::debug!(
+            "Rule \"{}\" for file \"{}\" evaluated to {}",
+            rule_name,
+            target_file_name,
+            is_match,
+        );
+
+        is_match
     });
 
-    match first_matching_rule {
-        Some(rule_name) => Some(String::from(*rule_name)),
-        None => None
-    }
+    first_matching_rule.map(|s| String::from(s))
 }
 
 fn main() {
@@ -150,16 +186,33 @@ fn main() {
         std::process::exit(1);
     }
 
-    let target_file = Path::new(&cli_args[1]);
-    let target_file_ext: Option<&str> = match target_file.extension() {
-        Some(val) => val.to_str(),
-        None => None
+    let target_file_path = Path::new(&cli_args[1]);
+
+    let target_file_name = match target_file_path.to_str() {
+        Some(file_name) => file_name,
+        None => {
+            log::error!("Could not get the name of the target file from the file path!");
+            panic!()
+        }
     };
 
-    let target_folder = match target_file.parent() {
-        Some(val) => val,
+    let target_file_ext: Option<&str> = match target_file_path.extension() {
+        Some(val) => val.to_str(),
+        None => None,
+    };
+
+    let target_folder = match target_file_path.parent() {
+        Some(path) => match path.to_str() {
+            Some(path_str) => path_str,
+            None => {
+                log::error!(
+                    "Failed to convert the target file's parent directory path into a string."
+                );
+                panic!();
+            }
+        },
         None => {
-            log::error!("Failed to establish parent directory of the target file.");
+            log::error!("Failed to establish the target file's parent directory.");
             panic!();
         }
     };
@@ -183,214 +236,158 @@ fn main() {
             panic!();
         }
     };
-    
-    let mappings = match proxy_rules["mapping"].as_object() {
-        Some(val) => val,
-        None => {
-            log::error!("The \"mappings\" key is missing from proxy rules, or it is not an object.");
+
+    let rules: HashMap<String, sj::Value> = match sj::from_value(proxy_rules["rules"].to_owned()) {
+        Ok(rules) => rules,
+        Err(error) => {
+            log::error!(
+                "The \"rules\" key is missing from proxy rules, or it is not an object ({})",
+                error
+            );
             panic!()
         }
     };
-    
-    let rules = match proxy_rules["rules"].as_object() {
-        Some(val) => val,
+
+    let mappings: HashMap<String, Vec<String>> = match sj::from_value(
+        proxy_rules["mappings"].to_owned(),
+    ) {
+        Ok(mappings) => mappings,
+        Err(error) => {
+            log::error!(
+                "The \"mappings\" key is missing from proxy rules, or could not be deserialized - {} ",
+                error
+            );
+            panic!();
+        }
+    };
+
+    // The fallback "*" catch all mappings, for when a file has no extension,
+    // or there is no match anywehre else.
+    let rule_names_fallback: Option<&Vec<String>> = mappings.get("*");
+
+    // The mappings resolved using the target file's extension.
+    let rule_names_from_ext: Option<&Vec<String>> = match target_file_ext {
+        Some(ext) => mappings.get(ext),
+        None => None,
+    };
+
+    let rule_name_from_ext: Option<String> = match rule_names_from_ext {
+        Some(rule_names) => find_matching_rule(rule_names, &rules, target_file_name),
+        None => None,
+    };
+
+    let final_rule_name: String = match rule_name_from_ext {
+        Some(rule_name) => rule_name,
         None => {
-            log::error!("The \"rules\" key is missing from proxy rules, or it is not an object.");
-            panic!()
-        }       
-    };
-    
-    // All of the rule names that are applicable to target file extension.
-    let target_file_ext_mappings: Option<Vec<&str>> = match target_file_ext {
-        Some(ext) => match mappings[ext].as_array() {
-            Some(arr) => {
-                let result: Vec<&str> = arr.iter().filter_map(|e|e.as_str()).collect();
-                if result.len() == 0 { None } else { Some(result) }
-            }
-            None => None
-        },
-        None => None
-    };
-
-    // The name of the first rule whose RegEx matches the target file.
-    let first_matching_rule: Option<&str> = match target_file_ext_mappings {
-        Some(rule_name_array) => {
-            let matching_rule_name = rule_name_array.iter().find(|e| {
-                let rule_name: &str = e.to_owned();
-                
-                // Get the rule with name rule_name from rules HashMap.
-                let rule = match rules.get(rule_name) {
-                    Some(rule) => rule,
-                    None => return false
-                };
-                
-                // Try to extract the array of RegEx patterns from the rule.
-                let regex_patterns = match rule["match"].as_array() {
-                    Some(patterns) => patterns,
-                    None => return false
-                };
-
-                // Return true if any of the RegEx patterns match the target file.
-                regex_patterns.iter().any(|regstr| {
-                    let regex_pattern_str = match regstr.as_str() {
-                        Some(pattern) => pattern,
-                        None => return false
-                    };
-
-                    match Regex::new(regex_pattern_str) {
-                        Ok(regex) => {
-                            return regex.is_match(target_file.to_str().unwrap());
-                        },
-
-                        Err(error) => {
-                            log::error!("The RegEx pattern \"{}\" belonging to rule \"{}\" failed to compile - {}", regex_pattern_str, rule_name, error);
-                            return false;
-                        }
-                    }
-                })
-            });
-
-            match matching_rule_name {
-                Some(str) => Some(*str),
-                None => None
-            }
-        },
-
-        None => None
-    };
-
-    //
-    // let final_rule_name: Option<&str> = match(first_matching_rule) {
-    //     Some(rule_name) => Some(rule_name),
-    //     None => {
-    //         let star_mapping = mappings.get("*");
-    //
-    //         if star_mapping.is_none() {
-    //             None
-    //         }
-    //
-    //     }
-    // };
-    //
-    // 
-
-
-    // Old Code ------------------------------
-
-    for (index, proxy_rule) in proxy_rules.as_array().unwrap().iter().enumerate() {
-        // Get the comment string from the current proxy rule.
-        let mut command: String = match proxy_rule["cmd"].as_str() {
-            Some(val) => String::from(val),
-            None => {
-                log::error!(
-                    "Proxy rule #{} is missing the \"cmd\" key, or it is not a string.",
-                    index
-                );
+            if rule_names_fallback.is_none() {
+                log::warn!("Could not map the extension ({:?}) of file {} to a rule, and no fallbak mapping was defined.", target_file_ext, target_file_name);
                 panic!();
             }
-        };
 
-        // Get arguments string from proxy rule. This should be one contiguous
-        // string arguments, as opposed to a more traditional array approach.
-        let mut arguments: String = match proxy_rule["args"].as_str() {
-            Some(val) => val.to_owned(),
+            let rule_from_fallback: String = match find_matching_rule(
+                rule_names_fallback.unwrap(),
+                &rules,
+                &target_file_name,
+            ) {
+                Some(rule_name) => rule_name,
+                None => {
+                    log::warn!("Could not find a mapping for the file \"{}\" using its extension, and no fallback is defined.", target_file_name);
+                    panic!();
+                }
+            };
+
+            rule_from_fallback
+        }
+    };
+
+    let rule_data: &sj::Value = match rules.get(&final_rule_name) {
+        Some(rule_data) => rule_data,
+        None => {
+            log::error!(
+                "Could not find a rule with name \"{}\" - this is a strange state!",
+                final_rule_name
+            );
+            panic!();
+        }
+    };
+
+    let mut command: String = match rule_data.get("command") {
+        Some(jv) => match jv.as_str() {
+            Some(jstr) => String::from(jstr),
             None => {
                 log::error!(
-                    "Proxy rule #{} is missing the \"args\" key, or it is not a string.",
-                    index
+                    "The \"command\" key in rule \"{}\" is not a string!",
+                    final_rule_name
                 );
+
                 panic!();
             }
-        };
+        },
+        None => {
+            log::error!(
+                "Malformed rule! Rule with the name \"{}\" is missing its command key!",
+                final_rule_name
+            );
+            panic!();
+        }
+    };
 
-        // Get working directory override from proxy rule, if the key it exists.
-        // If the key doesn't exist, get None instead, as this key is optional.
-        let mut wd_override: Option<String> = match proxy_rule["wd"].as_str() {
-            Some(val) => Some(String::from(val)),
-            None => None,
-        };
+    let mut arguments = String::from(rule_data["arguments"].as_str().unwrap_or(""));
 
-        // Get the RegEx pattern strings from the proxy rule.
-        let patterns: Vec<String> = match proxy_rule["regex"].as_array() {
-            Some(val) => val
-                .to_owned()
-                .iter()
-                .map(|pattern| match pattern.as_str() {
-                    Some(pattern) => String::from(pattern),
-                    None => {
-                        log::error!(
-                            "One of the RegEx patterns of proxy rule #{} is not a string!",
-                            index
-                        );
-                        panic!()
-                    }
-                })
-                .collect(),
-            None => {
-                log::error!(
-                    "Proxy rule #{} is missing the \"RegEx\" key, or it is not an array.",
-                    index
-                );
-                panic!()
-            }
-        };
+    let mut cwd = String::from(rule_data["cwd"].as_str().unwrap_or(target_folder));
 
-        // Skip the current proxy rule if the target file's name doesn't match
-        // any of the proxy rule's RegEx patterns.
-        if !patterns.iter().any(|pattern| match Regex::new(pattern) {
-            Ok(val) => val.is_match(target_file.to_str().unwrap()),
-            Err(err) => {
-                log::error!(
-                    "Error when compiling RegEx pattern {:?} - {:?}",
-                    pattern,
-                    err
-                );
-                panic!()
-            }
-        }) {
-            continue;
+    let creation_extras: CreationExtras = rule_data["extras"]
+        .as_object()
+        .map_or(CreationExtras::default(), |obj_extras| {
+            CreationExtras::from_json(obj_extras)
+        });
+
+    log::debug!("CreationExtras: {:?}", creation_extras);
+    log::debug!("NativeCreationExtras: {:?}", creation_extras.as_native());
+
+    for (index, cli_arg) in cli_args.iter().enumerate() {
+        let clarg_placeholder_string = format!("~~${}", index);
+        let clarg_placeholder: &str = clarg_placeholder_string.as_str();
+
+        // let tf_placeholder: &str = "~~$filedir";
+
+        if command.contains(clarg_placeholder) {
+            command = command.replace(clarg_placeholder, cli_arg.as_str());
         }
 
-        // Replace any valid palceholder strings in the command string and the
-        // argument strings with the appropriate values from the command line.
-        for (index, cli_arg) in cli_args.iter().enumerate() {
-            let placeholder_lftm = format!("~~${}", index);
-            let placeholder: &str = placeholder_lftm.as_str();
+        // if command.contains(tf_placeholder) {
+        //     command = command.replace(tf_placeholder, target_folder);
+        // }
 
-            if command.contains(placeholder) {
-                command = command.replace(placeholder, cli_arg);
-            }
-
-            if arguments.contains(placeholder) {
-                arguments = arguments.replace(placeholder, cli_arg);
-            }
-
-            wd_override = match wd_override {
-                Some(val) => Some(val.replace(placeholder, cli_arg)),
-                None => None,
-            }
+        if arguments.contains(clarg_placeholder) {
+            arguments = arguments.replace(clarg_placeholder, cli_arg);
         }
 
-        log::debug!(
-            "Creating process, path: \"{}\", args: \"{}\", cwd \"{}\"",
-            command,
-            arguments,
-            match wd_override.to_owned() {
-                Some(val) => val,
-                None => String::from("None"),
-            }
-        );
+        // if arguments.contains(tf_placeholder) {
+        //     arguments = arguments.replace(tf_placeholder, target_folder);
+        // }
 
-        // winutil::create_process(command, arguments, wd_override);
-
-        if cfg!(debug_assertions) {
-            write!(
-                std::io::stdout(),
-                "{}",
-                "Press enter to close the debug message console..."
-            )
-            .unwrap();
-            std::io::stdin().read(&mut [0u8]).unwrap();
+        if cwd.contains(clarg_placeholder) {
+            cwd = cwd.replace(clarg_placeholder, cli_arg);
         }
+
+        // if cwd.contains(tf_placeholder) {
+        //     cwd = cwd.replace(tf_placeholder, target_folder);
+        // }
+    }
+
+    log::debug!(
+        "Creating process, path: \"{}\", args: \"{}\"",
+        command,
+        arguments
+    );
+
+    let native_extras = creation_extras.as_native();
+
+    winutil::create_process(command, arguments, cwd, native_extras);
+
+    if cfg!(debug_assertions) {
+        println!("Press enter to close the debug message console.");
+        std::io::stdin().read(&mut [0u8]).unwrap_or(1);
     }
 }
