@@ -3,55 +3,14 @@
 
 use regex::Regex;
 use serde_json as sj;
-use std::collections::HashMap;
-use std::env;
-use std::fs;
-use std::io::{Read, Write};
-use std::path::Path;
+use std::{collections::HashMap, env, io::Read, path::Path};
 
-pub mod winutil;
-use winutil::structs::*;
+mod logging;
+use logging::MAIN_LOGGER;
 
-struct FileLogger;
-static FILE_LOGGER: FileLogger = FileLogger;
-
-impl log::Log for FileLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Debug
-    }
-
-    fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
-            let current_exe_path = env::current_exe().unwrap();
-            let exe_dir_path = current_exe_path.parent().unwrap();
-            let log_file_path = exe_dir_path.join("fassoc-proxy.log");
-
-            let mut log_file = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_file_path)
-                .unwrap();
-
-            let log_time = chrono::Local::now().format("%d-%m-%y %H:%M:%S");
-
-            let outmsg = format!(
-                "[{}] - {} - {}",
-                log_time.to_string(),
-                record.level(),
-                record.args()
-            );
-
-            println!("{}", outmsg);
-
-            match writeln!(log_file, "{}", outmsg) {
-                Ok(val) => val,
-                Err(_) => (),
-            }
-        }
-    }
-
-    fn flush(&self) {}
-}
+mod winutil;
+use winutil::procspawn::create_process;
+use winutil::structs::CreationExtras;
 
 fn read_rules_json(path: String) -> Result<sj::Value, String> {
     let cfg_raw_json: String = match std::fs::read_to_string(path.to_owned()) {
@@ -169,7 +128,7 @@ fn find_matching_rule(
 }
 
 fn main() {
-    log::set_logger(&FILE_LOGGER).unwrap();
+    log::set_logger(&MAIN_LOGGER).unwrap();
 
     if cfg!(debug_assertions) {
         log::set_max_level(log::LevelFilter::Debug);
@@ -349,31 +308,31 @@ fn main() {
         let clarg_placeholder_string = format!("~~${}", index);
         let clarg_placeholder: &str = clarg_placeholder_string.as_str();
 
-        // let tf_placeholder: &str = "~~$filedir";
+        let tf_placeholder: &str = "~~$filedir";
 
         if command.contains(clarg_placeholder) {
             command = command.replace(clarg_placeholder, cli_arg.as_str());
         }
 
-        // if command.contains(tf_placeholder) {
-        //     command = command.replace(tf_placeholder, target_folder);
-        // }
+        if command.contains(tf_placeholder) {
+            command = command.replace(tf_placeholder, target_folder);
+        }
 
         if arguments.contains(clarg_placeholder) {
             arguments = arguments.replace(clarg_placeholder, cli_arg);
         }
 
-        // if arguments.contains(tf_placeholder) {
-        //     arguments = arguments.replace(tf_placeholder, target_folder);
-        // }
+        if arguments.contains(tf_placeholder) {
+            arguments = arguments.replace(tf_placeholder, target_folder);
+        }
 
         if cwd.contains(clarg_placeholder) {
             cwd = cwd.replace(clarg_placeholder, cli_arg);
         }
 
-        // if cwd.contains(tf_placeholder) {
-        //     cwd = cwd.replace(tf_placeholder, target_folder);
-        // }
+        if cwd.contains(tf_placeholder) {
+            cwd = cwd.replace(tf_placeholder, target_folder);
+        }
     }
 
     log::debug!(
@@ -384,7 +343,7 @@ fn main() {
 
     let native_extras = creation_extras.as_native();
 
-    winutil::create_process(command, arguments, cwd, native_extras);
+    create_process(command, arguments, cwd, native_extras);
 
     if cfg!(debug_assertions) {
         println!("Press enter to close the debug message console.");

@@ -2,15 +2,14 @@ use std::ffi::CString;
 use windows::core::{PCSTR, PSTR};
 use windows::Win32::System::Threading::{CreateProcessA, PROCESS_INFORMATION};
 
-pub mod structs;
-use structs::*;
+use super::structs::*;
 
 pub fn create_process(path: String, args: String, cd: String, extras: NativeCreationExtras) {
     let path_cstr = PCSTR(match CString::new(path.to_owned()) {
         Ok(cstr) => cstr.into_raw() as *mut u8,
         Err(error) => {
             log::error!(
-                "Could turn the command string ({}) into a native CString! - {}",
+                "Could not turn the command string ({}) into a native CString, encountered error: {}",
                 path,
                 error
             );
@@ -22,7 +21,7 @@ pub fn create_process(path: String, args: String, cd: String, extras: NativeCrea
         Ok(cstr) => cstr.into_raw() as *mut u8,
         Err(error) => {
             log::error!(
-                "Could turn the argument string ({}) into a native CString! - {}",
+                "Could not turn the argument string ({}) into a native CString, encountered error: {}",
                 args,
                 error
             );
@@ -34,7 +33,7 @@ pub fn create_process(path: String, args: String, cd: String, extras: NativeCrea
         Ok(cstr) => cstr.into_raw() as *mut u8,
         Err(error) => {
             log::error!(
-                "Could turn the current directory / cd string ({}) string into a native CString! - {}",
+                "Could not turn the current directory / cd string ({}) string into a native CString, encountered error: {}",
                 args,
                 error
             );
