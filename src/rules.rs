@@ -14,7 +14,16 @@ pub enum FindRuleError {
     CannotConvertPath(String), // In the future, make this take a &str
     NoMappingFound,
     NoRuleFound,
-    NoMath,
+}
+
+impl std::fmt::Display for FindRuleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FindRuleError::CannotConvertPath(s) => write!(f, "Cannot convert path: {}", s),
+            FindRuleError::NoMappingFound => write!(f, "No mapping found"),
+            FindRuleError::NoRuleFound => write!(f, "No rule found"),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -25,10 +34,10 @@ pub struct FassocRules {
 
 impl FassocRules {
     pub fn find_suitable_rule(&self, file_path: &Path) -> Result<Rule, FindRuleError> {
-        let file_path_str: String = file_path.to_str().map_or_else(
-            || Err(FindRuleError::CannotConvertPath(String::from(""))),
-            |s| Ok(String::from(s)),
-        )?;
+        // let file_path_str: String = file_path.to_str().map_or_else(
+        //     || Err(FindRuleError::CannotConvertPath(String::from(""))),
+        //     |s| Ok(String::from(s)),
+        // )?;
 
         let file_name_str: String = file_path.file_name().and_then(|n| n.to_str()).map_or_else(
             || Err(FindRuleError::CannotConvertPath(String::from(""))),
@@ -49,19 +58,9 @@ impl FassocRules {
             }
         };
 
-        let regexf_only = final_mapping.iter().fold(vec![] as Vec<&Rule>, |v, s| {
-            self.rules.get(s).map(|r| {
-                if r.regexf.is_some() && r.regexc.is_none() {
-                    v.push(r);
-                }
-            });
-
-            v
-        });
-
         let (regexf_only, regexc_only, regexf_and_c, noregex) = final_mapping.iter().fold(
             (vec![], vec![], vec![], vec![]) as (Vec<&Rule>, Vec<&Rule>, Vec<&Rule>, Vec<&Rule>),
-            |v, s| {
+            |mut v, s| {
                 self.rules.get(s).map(|r| {
                     if r.regexf.is_some() && r.regexc.is_none() {
                         v.0.push(r);
@@ -80,19 +79,22 @@ impl FassocRules {
 
         // Return the first rule that matches and only has a filename pattern.
         for rule in regexf_only {
-            if rule.rmatch_file_name(file_name_str).unwrap_or(false) {
-                return Ok(*rule);
+            if rule
+                .rmatch_file_name(file_name_str.to_owned())
+                .unwrap_or(false)
+            {
+                return Ok(rule.to_owned());
             }
         }
 
         // File content is stored, so that it doesn't have to be read multiple
         // times. Reading is avoided unless needed, for performance reasons.
 
-        let mut file_content: Option<String> = None;
+        let mut file_content: &mut Option<String> = &mut None;
 
-        let ensure_contents_read = || {
-            if file_content.is_none() {
-                file_content = std::fs::read_to_string(file_path).map_or_else(
+        let ensure_contents_read = |content: &mut Option<String>| {
+            if content.is_none() {
+                *content = std::fs::read_to_string(file_path).map_or_else(
                     |e| {
                         log::error!("Failed to read file's contents: {}", e);
                         None
@@ -104,30 +106,33 @@ impl FassocRules {
 
         // Return the first rule that matches and has a filename AND content pattern.
         for rule in regexf_and_c {
-            if rule.rmatch_file_name(file_name_str).unwrap_or(false) {
-                ensure_contents_read();
+            if rule
+                .rmatch_file_name(file_name_str.to_owned())
+                .unwrap_or(false)
+            {
+                ensure_contents_read(&mut file_content);
 
-                if file_content.map_or(false, |content| {
+                if file_content.as_ref().map_or(false, |content| {
                     rule.rmatch_file_content(content).unwrap_or(false)
                 }) {
-                    return Ok(*rule);
+                    return Ok(rule.to_owned());
                 }
             }
         }
 
         // Return the first rule that matches and only has a content pattern.
         for rule in regexc_only {
-            ensure_contents_read();
+            ensure_contents_read(&mut file_content);
 
-            if file_content.map_or(false, |content| {
+            if file_content.as_ref().map_or(false, |content| {
                 rule.rmatch_file_content(content).unwrap_or(false)
             }) {
-                return Ok(*rule);
+                return Ok(rule.to_owned());
             }
         }
 
         return match noregex.first() {
-            Some(rule) => Ok(*rule.to_owned()),
+            Some(rule) => Ok(rule.to_owned().to_owned()),
             None => Err(FindRuleError::NoRuleFound),
         };
     }
@@ -136,6 +141,11 @@ impl FassocRules {
 // ----------------------------------------------------------------------------
 // Rule
 // ----------------------------------------------------------------------------
+#[derive(Debug)]
+pub enum RuleRegexError {
+    RegexCompileError(re::Error),
+    NoRegexError,
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Rule {
@@ -152,14 +162,8 @@ pub struct Rule {
     pub extras: Option<Extras>,
 }
 
-#[derive(Debug)]
-pub enum RuleRegexError {
-    RegexCompileError(re::Error),
-    NoRegexError,
-}
-
 impl Rule {
-    pub fn rmatch_file(regstr: Option<String>, content: String) -> Result<bool, RuleRegexError> {
+    fn rmatch_file(regstr: Option<String>, content: &String) -> Result<bool, RuleRegexError> {
         regstr.map_or(Err(RuleRegexError::NoRegexError), |regstr| {
             re::Regex::new(regstr.as_str()).map_or_else(
                 |error| Err(RuleRegexError::RegexCompileError(error)),
@@ -168,16 +172,29 @@ impl Rule {
         })
     }
 
-    pub fn rmatch_file_name(self, file_name: String) -> Result<bool, RuleRegexError> {
-        Rule::rmatch_file(self.regexf, file_name)
+    pub fn rmatch_file_name(&self, file_name: String) -> Result<bool, RuleRegexError> {
+        Rule::rmatch_file(self.regexf.to_owned(), &file_name)
     }
 
-    pub fn rmatch_file_content(self, file_content: String) -> Result<bool, RuleRegexError> {
-        Rule::rmatch_file(self.regexc, file_content)
+    pub fn rmatch_file_content(&self, file_content: &String) -> Result<bool, RuleRegexError> {
+        Rule::rmatch_file(self.regexc.to_owned(), file_content)
     }
+}
 
-    fn has_regex(&self) -> bool {
-        self.regexf.is_some() || self.regexc.is_some()
+impl Clone for Rule {
+    fn clone(&self) -> Self {
+        Rule {
+            command: self.command.clone(),
+            arguments: self.arguments.clone(),
+            cwd: self.cwd.clone(),
+            regexf: self.regexf.clone(),
+            regexc: self.regexc.clone(),
+            process_attributes: self.process_attributes.clone(),
+            thread_attributes: self.thread_attributes.clone(),
+            inherit_handles: self.inherit_handles.clone(),
+            creation_flags: self.creation_flags.clone(),
+            extras: self.extras.clone(),
+        }
     }
 }
 
@@ -191,7 +208,16 @@ pub struct SecurityAttributes {
     pub inherit_handle: Option<bool>,
 }
 
-impl SecurityAttributes {}
+// impl SecurityAttributes {}
+
+impl Clone for SecurityAttributes {
+    fn clone(&self) -> Self {
+        SecurityAttributes {
+            security_descriptor: self.security_descriptor.clone(),
+            inherit_handle: self.inherit_handle.clone(),
+        }
+    }
+}
 
 // ----------------------------------------------------------------------------
 // Extras
@@ -212,4 +238,22 @@ pub struct Extras {
     pub show_window: Option<u16>,
 }
 
-impl Extras {}
+// impl Extras {}
+
+impl Clone for Extras {
+    fn clone(&self) -> Self {
+        Extras {
+            desktop: self.desktop.clone(),
+            title: self.title.clone(),
+            x: self.x.clone(),
+            y: self.y.clone(),
+            x_size: self.x_size.clone(),
+            y_size: self.y_size.clone(),
+            x_count_chars: self.x_count_chars.clone(),
+            y_count_chars: self.y_count_chars.clone(),
+            fill_attribute: self.fill_attribute.clone(),
+            flags: self.flags.clone(),
+            show_window: self.show_window.clone(),
+        }
+    }
+}
