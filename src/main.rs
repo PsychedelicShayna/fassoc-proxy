@@ -122,7 +122,7 @@ fn main() {
         }
     };
 
-    let suitable_rule: Rule = match fassoc_rules.find_suitable_rule(target_file_path) {
+    let suitable_rule: &Rule = match fassoc_rules.find_suitable_rule(target_file_path) {
         Ok(rule) => rule,
         Err(error) => {
             log::error!(

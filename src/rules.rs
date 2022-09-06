@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 pub enum FindRuleError {
-    CannotConvertPath(String), // In the future, make this take a &str
+    CannotConvertPath,
     NoMappingFound,
     NoRuleFound,
 }
@@ -19,9 +19,11 @@ pub enum FindRuleError {
 impl std::fmt::Display for FindRuleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FindRuleError::CannotConvertPath(s) => write!(f, "Cannot convert path: {}", s),
-            FindRuleError::NoMappingFound => write!(f, "No mapping found"),
-            FindRuleError::NoRuleFound => write!(f, "No rule found"),
+            FindRuleError::CannotConvertPath => {
+                write!(f, "Could not convert the path of the file into a string.",)
+            }
+            FindRuleError::NoMappingFound => write!(f, "Could not find any applicable mappings."),
+            FindRuleError::NoRuleFound => write!(f, "Could not find any applicable rules."),
         }
     }
 }
@@ -33,70 +35,44 @@ pub struct FassocRules {
 }
 
 impl FassocRules {
-    pub fn find_suitable_rule(&self, file_path: &Path) -> Result<Rule, FindRuleError> {
-        // let file_path_str: String = file_path.to_str().map_or_else(
-        //     || Err(FindRuleError::CannotConvertPath(String::from(""))),
-        //     |s| Ok(String::from(s)),
-        // )?;
-
+    pub fn find_suitable_rule(&self, file_path: &Path) -> Result<&Rule, FindRuleError> {
         let file_name_str: String = file_path.file_name().and_then(|n| n.to_str()).map_or_else(
-            || Err(FindRuleError::CannotConvertPath(String::from(""))),
+            || Err(FindRuleError::CannotConvertPath),
             |s| Ok(String::from(s)),
         )?;
 
+        // File extension is allowed to be None, as it could stil be handled
+        // by the fallback catch-all mapping "*"
         let file_ext_str = file_path
             .extension()
             .and_then(|ext| ext.to_str().map(|s| String::from(s)));
 
         let fallback_mapping = self.mappings.get(&String::from("*"));
-        let extension_mapping = file_ext_str.and_then(|s| self.mappings.get(&s));
+        let extension_mapping = file_ext_str.to_owned().and_then(|s| self.mappings.get(&s));
 
+        // Use the mapping derived from the file extension, if found, otherwise
+        // use the fallback mapping, if found.
         let final_mapping = match extension_mapping.or(fallback_mapping) {
             Some(mapping) => mapping,
             None => {
+                // Neither the extension mapping nor the fallback mapping found.
                 return Err(FindRuleError::NoMappingFound);
             }
         };
 
-        let (regexf_only, regexc_only, regexf_and_c, noregex) = final_mapping.iter().fold(
-            (vec![], vec![], vec![], vec![]) as (Vec<&Rule>, Vec<&Rule>, Vec<&Rule>, Vec<&Rule>),
-            |mut v, s| {
-                self.rules.get(s).map(|r| {
-                    if r.regexf.is_some() && r.regexc.is_none() {
-                        v.0.push(r);
-                    } else if r.regexf.is_none() && r.regexc.is_some() {
-                        v.1.push(r);
-                    } else if r.regexf.is_some() && r.regexc.is_some() {
-                        v.2.push(r);
-                    } else {
-                        v.3.push(r)
-                    }
-                });
-
-                v
-            },
-        );
-
-        // Return the first rule that matches and only has a filename pattern.
-        for rule in regexf_only {
-            if rule
-                .rmatch_file_name(file_name_str.to_owned())
-                .unwrap_or(false)
-            {
-                return Ok(rule.to_owned());
-            }
-        }
-
         // File content is stored, so that it doesn't have to be read multiple
         // times. Reading is avoided unless needed, for performance reasons.
-
         let mut file_content: &mut Option<String> = &mut None;
 
         let ensure_contents_read = |content: &mut Option<String>| {
             if content.is_none() {
                 *content = std::fs::read_to_string(file_path).map_or_else(
                     |e| {
-                        log::error!("Failed to read file's contents: {}", e);
+                        log::error!(
+                            "Failed to read the contents of file \"{}\" because: {}",
+                            file_path.to_str().unwrap_or("CANNOT_GET_FILE"),
+                            e
+                        );
                         None
                     },
                     |s| Some(s),
@@ -104,37 +80,68 @@ impl FassocRules {
             }
         };
 
-        // Return the first rule that matches and has a filename AND content pattern.
-        for rule in regexf_and_c {
-            if rule
-                .rmatch_file_name(file_name_str.to_owned())
-                .unwrap_or(false)
-            {
+        for (index, rule_name) in final_mapping.iter().enumerate() {
+            log::debug!("Trying rule #{} - {}", index, rule_name);
+
+            let rule: &Rule = match self.rules.get(rule_name) {
+                Some(rule) => rule,
+                None => {
+                    log::warn!(
+                        "Ignored a rule name \"{}\" from mapping \"{}\", because it doesn't exist.",
+                        rule_name,
+                        file_ext_str.to_owned().unwrap_or(String::from("*"))
+                    );
+                    continue;
+                }
+            };
+
+            let mut valid = true;
+
+            // If rule has file name RegEx, validate that the RegEx matches.
+            valid &= rule.regexf.as_ref().map_or(true, |_| {
+                rule.rmatch_file_name(file_name_str.to_owned())
+                    .unwrap_or_else(|error| {
+                        log::error!(
+                            "Encountered RegEx error when evaluating mapped rules: {:?}",
+                            error
+                        );
+                        false
+                    })
+            });
+
+            // If already invalidated, continue.
+            if !valid {
+                continue;
+            }
+
+            // If rule has file content RegEx, validate that the RegEx matches.
+            valid &= rule.regexc.as_ref().map_or(true, |_| {
                 ensure_contents_read(&mut file_content);
 
-                if file_content.as_ref().map_or(false, |content| {
-                    rule.rmatch_file_content(content).unwrap_or(false)
-                }) {
-                    return Ok(rule.to_owned());
-                }
+                file_content.as_ref().map_or(false, |content| {
+                    rule.rmatch_file_content(content).unwrap_or_else(|error| {
+                        log::error!(
+                            "Encountered RegEx error when evaluating mapped rules: {:?}",
+                            error,
+                        );
+                        false
+                    })
+                })
+            });
+
+            // If the rule is still valid after validation, return it.
+            if valid {
+                log::debug!(
+                    "Rule #{} - {} - is suitable for this file, using this rule.",
+                    index,
+                    rule_name
+                );
+
+                return Ok(rule);
             }
         }
 
-        // Return the first rule that matches and only has a content pattern.
-        for rule in regexc_only {
-            ensure_contents_read(&mut file_content);
-
-            if file_content.as_ref().map_or(false, |content| {
-                rule.rmatch_file_content(content).unwrap_or(false)
-            }) {
-                return Ok(rule.to_owned());
-            }
-        }
-
-        return match noregex.first() {
-            Some(rule) => Ok(rule.to_owned().to_owned()),
-            None => Err(FindRuleError::NoRuleFound),
-        };
+        return Err(FindRuleError::NoRuleFound);
     }
 }
 
