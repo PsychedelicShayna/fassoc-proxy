@@ -143,7 +143,15 @@ fn main() {
             .unwrap_or(String::from("NONE"))
     );
 
-    create_process(&suitable_rule);
+    match create_process(&suitable_rule) {
+        Ok(process_info) => {
+            log::debug!("Process created, information: {:?}", process_info)
+        }
+
+        Err(error) => {
+            log::error!("Error when attempting to create process: {}", error)
+        }
+    }
 
     if cfg!(debug_assertions) {
         println!("Press enter to close the debug message console.");

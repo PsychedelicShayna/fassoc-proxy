@@ -1,7 +1,12 @@
 use std::ffi::{c_void, CString};
 use windows::core::{PCSTR, PSTR};
 use windows::Win32::System::Threading::{CreateProcessA, PROCESS_INFORMATION};
-use windows::Win32::UI::WindowsAndMessaging::*;
+
+use windows::Win32::UI::WindowsAndMessaging::{
+    SHOW_WINDOW_CMD, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SW_SHOWDEFAULT,
+    SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED, SW_SHOWMINNOACTIVE, SW_SHOWNA, SW_SHOWNOACTIVATE,
+    SW_SHOWNORMAL,
+};
 
 use super::rules::Rule;
 use std::collections::HashMap;
@@ -9,8 +14,26 @@ use std::mem::size_of;
 use std::ptr;
 use windows::Win32::Foundation::BOOL;
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
-use windows::Win32::System::Console::*;
-use windows::Win32::System::Threading::*;
+
+use windows::Win32::System::Console::{
+    BACKGROUND_BLUE, BACKGROUND_GREEN, BACKGROUND_INTENSITY, BACKGROUND_RED,
+    COMMON_LVB_GRID_HORIZONTAL, COMMON_LVB_GRID_LVERTICAL, COMMON_LVB_GRID_RVERTICAL,
+    COMMON_LVB_LEADING_BYTE, COMMON_LVB_REVERSE_VIDEO, COMMON_LVB_SBCSDBCS,
+    COMMON_LVB_TRAILING_BYTE, COMMON_LVB_UNDERSCORE, FOREGROUND_BLUE, FOREGROUND_GREEN,
+    FOREGROUND_INTENSITY, FOREGROUND_RED,
+};
+
+use windows::Win32::System::Threading::{
+    CREATE_BREAKAWAY_FROM_JOB, CREATE_DEFAULT_ERROR_MODE, CREATE_NEW_CONSOLE,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_PRESERVE_CODE_AUTHZ_LEVEL,
+    CREATE_PROTECTED_PROCESS, CREATE_SECURE_PROCESS, CREATE_SEPARATE_WOW_VDM,
+    CREATE_SHARED_WOW_VDM, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, DEBUG_ONLY_THIS_PROCESS,
+    DEBUG_PROCESS, DETACHED_PROCESS, EXTENDED_STARTUPINFO_PRESENT, INHERIT_PARENT_AFFINITY,
+    PROCESS_CREATION_FLAGS, STARTF_FORCEOFFFEEDBACK, STARTF_FORCEONFEEDBACK, STARTF_PREVENTPINNING,
+    STARTF_RUNFULLSCREEN, STARTF_TITLEISAPPID, STARTF_TITLEISLINKNAME, STARTF_UNTRUSTEDSOURCE,
+    STARTF_USECOUNTCHARS, STARTF_USEFILLATTRIBUTE, STARTF_USEHOTKEY, STARTF_USEPOSITION,
+    STARTF_USESHOWWINDOW, STARTF_USESIZE, STARTF_USESTDHANDLES, STARTUPINFOA, STARTUPINFOW_FLAGS,
+};
 
 #[derive(Debug)]
 pub struct ProcessCreationParameters {
@@ -278,8 +301,53 @@ impl ProcessCreationParameters {
     }
 }
 
-pub fn create_process(rule: &Rule) {
+#[derive(Debug)]
+pub enum CreateProcessError {
+    CommandNotExecutable(String),
+    CommandDoesNotExist(String),
+    CommandNotAbsolute(String),
+}
+
+impl std::fmt::Display for CreateProcessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CreateProcessError::CommandNotExecutable(cmd) => {
+                write!(f, "The command \"{}\" is not executable", cmd)
+            }
+            CreateProcessError::CommandDoesNotExist(cmd) => {
+                write!(f, "The command \"{}\" does not exist", cmd)
+            }
+            CreateProcessError::CommandNotAbsolute(cmd) => {
+                write!(f, "The commaned \"{}\" does not have an absolute path", cmd)
+            }
+        }
+    }
+}
+
+pub fn create_process(rule: &Rule) -> Result<PROCESS_INFORMATION, CreateProcessError> {
     let params = ProcessCreationParameters::from_rule(rule);
+
+    let command_path = std::path::Path::new(&rule.command);
+
+    if !command_path.exists() {
+        return Err(CreateProcessError::CommandDoesNotExist(
+            rule.command.clone(),
+        ));
+    }
+
+    if !command_path.extension().map_or(false, |ext| {
+        ext.to_str().map_or(false, |exts| exts.ends_with("exe"))
+    }) {
+        return Err(CreateProcessError::CommandNotExecutable(
+            rule.command.to_owned(),
+        ));
+    }
+
+    if !command_path.is_absolute() {
+        return Err(CreateProcessError::CommandNotAbsolute(
+            rule.command.to_owned(),
+        ));
+    }
 
     unsafe {
         let mut process_information = PROCESS_INFORMATION::default();
@@ -303,5 +371,7 @@ pub fn create_process(rule: &Rule) {
 
         log::debug!("CreateProcessA returned: {:?}", result);
         log::debug!("Process Information ---------\n{:?}", process_information);
+
+        Ok(process_information)
     }
 }
