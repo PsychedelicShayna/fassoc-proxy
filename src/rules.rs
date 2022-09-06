@@ -10,20 +10,20 @@ use serde::{Deserialize, Serialize};
 // ----------------------------------------------------------------------------
 
 #[derive(Debug)]
-pub enum FindRuleError {
+pub enum FindCommandError {
     CannotConvertPath,
     NoMappingFound,
-    NoRuleFound,
+    NoMatchFound,
 }
 
-impl std::fmt::Display for FindRuleError {
+impl std::fmt::Display for FindCommandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FindRuleError::CannotConvertPath => {
+            FindCommandError::CannotConvertPath => {
                 write!(f, "Could not convert the path of the file into a string.",)
             }
-            FindRuleError::NoMappingFound => write!(f, "Could not find any applicable mappings."),
-            FindRuleError::NoRuleFound => write!(f, "Could not find any applicable rules."),
+            FindCommandError::NoMappingFound => write!(f, "No mapping could map the file to a matcher."),
+            FindCommandError::NoMatchFound => write!(f, "No matcher could match the file to a command."),
         }
     }
 }
@@ -31,13 +31,14 @@ impl std::fmt::Display for FindRuleError {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FassocRules {
     pub mappings: HashMap<String, Vec<String>>,
-    pub rules: HashMap<String, Rule>,
+    pub matchers: HashMap<String, Matcher>,
+    pub commands: HashMap<String, Command>,
 }
 
 impl FassocRules {
-    pub fn find_suitable_rule(&self, file_path: &Path) -> Result<&Rule, FindRuleError> {
+    pub fn find_suitable_command(&self, file_path: &Path) -> Result<&Command, FindCommandError> {
         let file_name_str: String = file_path.file_name().and_then(|n| n.to_str()).map_or_else(
-            || Err(FindRuleError::CannotConvertPath),
+            || Err(FindCommandError::CannotConvertPath),
             |s| Ok(String::from(s)),
         )?;
 
@@ -56,7 +57,7 @@ impl FassocRules {
             Some(mapping) => mapping,
             None => {
                 // Neither the extension mapping nor the fallback mapping found.
-                return Err(FindRuleError::NoMappingFound);
+                return Err(FindCommandError::NoMappingFound);
             }
         };
 
@@ -80,48 +81,74 @@ impl FassocRules {
             }
         };
 
-        for (index, rule_name) in final_mapping.iter().enumerate() {
-            log::debug!("Trying rule #{} - {}", index, rule_name);
+        let mapping_name = file_ext_str.to_owned().unwrap_or_else(|| String::from("*"));
 
-            let rule: &Rule = match self.rules.get(rule_name) {
-                Some(rule) => rule,
+        for (index, matcher_name) in final_mapping.iter().enumerate() {
+            log::debug!("Trying matcher #{} - {}", index, matcher_name);
+
+            let matcher: &Matcher = match self.matchers.get(matcher_name) {
+                Some(matcher) => matcher,
                 None => {
-                    log::warn!(
-                        "Ignored a rule name \"{}\" from mapping \"{}\", because it doesn't exist.",
-                        rule_name,
-                        file_ext_str.to_owned().unwrap_or(String::from("*"))
-                    );
+                    match self.commands.get(matcher_name) {
+                        Some(command) => {
+                            log::debug!(
+                                "Mapping \"{}\" referred to \"{}\" which isn't a valid matcher, but it is a valid command, mapping directly to command instead.", 
+                                mapping_name,
+                                matcher_name
+                            );
+
+                            return Ok(command);
+                        },
+
+                        None => {
+                            log::warn!(
+                                "Ignored a matcher with mame \"{}\" from mapping \"{}\" because it doesn't point to anything that exists.", 
+                                matcher_name, 
+                                mapping_name
+                            );
+
+                            continue;
+                        }
+                    }
+
+                }
+            };
+
+            let matcher_command: &Command = match self.commands.get(&matcher.command) {
+                Some(command) => command,
+                None => {
+                    log::warn!("The command pointed to by matcher \"{}\" does not exist, ignoring this matcher.", matcher_name);
                     continue;
                 }
             };
 
-            let mut valid = true;
+            let mut is_match: bool = true;
 
-            // If rule has file name RegEx, validate that the RegEx matches.
-            valid &= rule.regexf.as_ref().map_or(true, |_| {
-                rule.rmatch_file_name(file_name_str.to_owned())
+            // If matcher has file name RegEx, match the RegEx against the file.
+            is_match &= matcher.regexf.as_ref().map_or(true, |_| {
+                matcher.rmatch_file_name(file_name_str.to_owned())
                     .unwrap_or_else(|error| {
                         log::error!(
-                            "Encountered RegEx error when evaluating mapped rules: {:?}",
+                            "Encountered RegEx error when evaluating mapped matchers: {:?}",
                             error
                         );
                         false
                     })
             });
 
-            // If already invalidated, continue.
-            if !valid {
+            // If match already failed, continue.
+            if !is_match {
                 continue;
             }
 
-            // If rule has file content RegEx, validate that the RegEx matches.
-            valid &= rule.regexc.as_ref().map_or(true, |_| {
+            // If matcher has file content RegEx, match the RegEx against the file.
+            is_match &= matcher.regexc.as_ref().map_or(true, |_| {
                 ensure_contents_read(&mut file_content);
 
                 file_content.as_ref().map_or(false, |content| {
-                    rule.rmatch_file_content(content).unwrap_or_else(|error| {
+                    matcher.rmatch_file_content(content).unwrap_or_else(|error| {
                         log::error!(
-                            "Encountered RegEx error when evaluating mapped rules: {:?}",
+                            "Encountered RegEx error when evaluating mapped matchers: {:?}",
                             error,
                         );
                         false
@@ -129,38 +156,67 @@ impl FassocRules {
                 })
             });
 
-            // If the rule is still valid after validation, return it.
-            if valid {
+            // If the matcher is still valid after validation, return it.
+            if is_match {
                 log::debug!(
-                    "Rule #{} - {} - is suitable for this file, using this rule.",
+                    "Matcher #{} - {} - matched this file.",
                     index,
-                    rule_name
+                    matcher_name
                 );
 
-                return Ok(rule);
+
+                return Ok(matcher_command);
             }
         }
 
-        return Err(FindRuleError::NoRuleFound);
+        return Err(FindCommandError::NoMatchFound);
     }
 }
 
 // ----------------------------------------------------------------------------
-// Rule
+// Matcher
 // ----------------------------------------------------------------------------
 #[derive(Debug)]
-pub enum RuleRegexError {
+pub enum MatcherError {
     RegexCompileError(re::Error),
     NoRegexError,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct Rule {
+pub struct Matcher {
     pub command: String,
-    pub arguments: Option<String>,
-    pub cwd: Option<String>,
     pub regexf: Option<String>,
     pub regexc: Option<String>,
+}
+
+impl Matcher {
+    fn rmatch_file(regstr: Option<String>, content: &String) -> Result<bool, MatcherError> {
+        regstr.map_or(Err(MatcherError::NoRegexError), |regstr| {
+            re::Regex::new(regstr.as_str()).map_or_else(
+                |error| Err(MatcherError::RegexCompileError(error)),
+                |regex| Ok(regex.is_match(content.as_str())),
+            )
+        })
+    }
+
+    pub fn rmatch_file_name(&self, file_name: String) -> Result<bool, MatcherError> {
+        Matcher::rmatch_file(self.regexf.to_owned(), &file_name)
+    }
+
+    pub fn rmatch_file_content(&self, file_content: &String) -> Result<bool, MatcherError> {
+        Matcher::rmatch_file(self.regexc.to_owned(), file_content)
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Command
+// ----------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Command {
+    pub path: String,
+    pub arguments: Option<String>,
+    pub cwd: Option<String>,
     pub process_attributes: Option<SecurityAttributes>,
     pub thread_attributes: Option<SecurityAttributes>,
     pub inherit_handles: Option<bool>,
@@ -169,33 +225,14 @@ pub struct Rule {
     pub extras: Option<Extras>,
 }
 
-impl Rule {
-    fn rmatch_file(regstr: Option<String>, content: &String) -> Result<bool, RuleRegexError> {
-        regstr.map_or(Err(RuleRegexError::NoRegexError), |regstr| {
-            re::Regex::new(regstr.as_str()).map_or_else(
-                |error| Err(RuleRegexError::RegexCompileError(error)),
-                |regex| Ok(regex.is_match(content.as_str())),
-            )
-        })
-    }
+impl Command {}
 
-    pub fn rmatch_file_name(&self, file_name: String) -> Result<bool, RuleRegexError> {
-        Rule::rmatch_file(self.regexf.to_owned(), &file_name)
-    }
-
-    pub fn rmatch_file_content(&self, file_content: &String) -> Result<bool, RuleRegexError> {
-        Rule::rmatch_file(self.regexc.to_owned(), file_content)
-    }
-}
-
-impl Clone for Rule {
+impl Clone for Command {
     fn clone(&self) -> Self {
-        Rule {
-            command: self.command.clone(),
+        Command {
+            path: self.path.clone(),
             arguments: self.arguments.clone(),
             cwd: self.cwd.clone(),
-            regexf: self.regexf.clone(),
-            regexc: self.regexc.clone(),
             process_attributes: self.process_attributes.clone(),
             thread_attributes: self.thread_attributes.clone(),
             inherit_handles: self.inherit_handles.clone(),

@@ -10,9 +10,9 @@ mod logging;
 use logging::MAIN_LOGGER;
 
 mod rules;
-use rules::{FassocRules, Rule};
+use rules::{Command, FassocRules};
 
-use crate::winproc::create_process;
+use crate::winproc::invoke_command;
 
 mod winproc;
 
@@ -43,25 +43,25 @@ fn read_fassoc_rules(path: String) -> Result<FassocRules, ReadRulesError> {
 }
 
 fn subst_arg_placeholders(rules: FassocRules, args: Vec<String>) -> FassocRules {
-    let mut new_rules: FassocRules = rules;
+    let mut subst_rules: FassocRules = rules;
 
     for (index, argument) in args.iter().enumerate() {
         let placeholder = format!("~~${}", index);
 
-        for rule in new_rules.rules.values_mut() {
-            rule.command = rule.command.replace(&placeholder, argument);
+        for command in subst_rules.commands.values_mut() {
+            command.path = command.path.replace(&placeholder, argument);
 
-            rule.arguments = rule
+            command.arguments = command
                 .arguments
                 .to_owned()
                 .map(|arg| arg.replace(&placeholder, argument));
 
-            rule.cwd = rule
+            command.cwd = command
                 .cwd
                 .to_owned()
                 .map(|cwd| cwd.replace(&placeholder, argument));
 
-            rule.extras = rule.extras.to_owned().map(|mut extras| {
+            command.extras = command.extras.to_owned().map(|mut extras| {
                 extras.title = extras.title.map(|str| str.replace(&placeholder, argument));
                 extras.desktop = extras
                     .desktop
@@ -71,7 +71,7 @@ fn subst_arg_placeholders(rules: FassocRules, args: Vec<String>) -> FassocRules 
         }
     }
 
-    new_rules
+    subst_rules
 }
 
 fn main() {
@@ -102,19 +102,19 @@ fn main() {
         }
     };
 
-    let proxy_rules_path: String = if cli_args.len() >= 3 {
+    let fassoc_rules_path: String = if cli_args.len() >= 3 {
         cli_args[2].clone()
     } else {
-        match env::var("FASSOC_PROXY_RULES") {
+        match env::var("FASSOC_RULES_PATH") {
             Ok(val) => val,
             Err(_) => {
-                log::error!("No argument or environment variable was given that points to the proxy rules file.");
+                log::error!("No argument or environment variable was given that points to the fassoc rules file.");
                 panic!()
             }
         }
     };
 
-    let fassoc_rules = match read_fassoc_rules(proxy_rules_path) {
+    let fassoc_rules = match read_fassoc_rules(fassoc_rules_path) {
         Ok(rules) => subst_arg_placeholders(rules, cli_args.to_owned()),
         Err(error) => {
             log::error!("Failure when reading fassoc rules ({})", error);
@@ -122,11 +122,11 @@ fn main() {
         }
     };
 
-    let suitable_rule: &Rule = match fassoc_rules.find_suitable_rule(target_file_path) {
-        Ok(rule) => rule,
+    let suitable_command: &Command = match fassoc_rules.find_suitable_command(target_file_path) {
+        Ok(command) => command,
         Err(error) => {
             log::error!(
-                "Could not find a suitable rule for the file \"{}\", because: {}",
+                "Could not find a suitable command for the file \"{}\", because: {}",
                 target_file_name,
                 error
             );
@@ -136,14 +136,14 @@ fn main() {
 
     log::debug!(
         "Creating process, path: \"{}\", args: \"{}\"",
-        suitable_rule.command.to_owned(),
-        suitable_rule
+        suitable_command.path.to_owned(),
+        suitable_command
             .arguments
             .to_owned()
             .unwrap_or(String::from("NONE"))
     );
 
-    match create_process(&suitable_rule) {
+    match invoke_command(&suitable_command) {
         Ok(process_info) => {
             log::debug!("Process created, information: {:?}", process_info)
         }

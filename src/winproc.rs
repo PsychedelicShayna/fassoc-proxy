@@ -8,7 +8,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SW_SHOWNORMAL,
 };
 
-use super::rules::Rule;
+use super::rules::Command;
 use std::collections::HashMap;
 use std::mem::size_of;
 use std::ptr;
@@ -70,13 +70,13 @@ impl Default for ProcessCreationParameters {
 }
 
 impl ProcessCreationParameters {
-    pub fn from_rule(rule: &Rule) -> ProcessCreationParameters {
+    pub fn from_rule(rule: &Command) -> ProcessCreationParameters {
         let mut pcp = ProcessCreationParameters::default();
 
-        pcp.command = CString::new(rule.command.to_owned()).map_or_else(
+        pcp.command = CString::new(rule.path.to_owned()).map_or_else(
             |error| {
                 log::error!("Couldn't nativize the command string \"{}\" from the selected rule, due to error: {}", 
-                    rule.command, error);
+                    rule.path, error);
 
                 panic!();
             },
@@ -324,29 +324,25 @@ impl std::fmt::Display for CreateProcessError {
     }
 }
 
-pub fn create_process(rule: &Rule) -> Result<PROCESS_INFORMATION, CreateProcessError> {
+pub fn invoke_command(rule: &Command) -> Result<PROCESS_INFORMATION, CreateProcessError> {
     let params = ProcessCreationParameters::from_rule(rule);
 
-    let command_path = std::path::Path::new(&rule.command);
+    let command_path = std::path::Path::new(&rule.path);
 
     if !command_path.exists() {
-        return Err(CreateProcessError::CommandDoesNotExist(
-            rule.command.clone(),
-        ));
+        return Err(CreateProcessError::CommandDoesNotExist(rule.path.clone()));
     }
 
     if !command_path.extension().map_or(false, |ext| {
         ext.to_str().map_or(false, |exts| exts.ends_with("exe"))
     }) {
         return Err(CreateProcessError::CommandNotExecutable(
-            rule.command.to_owned(),
+            rule.path.to_owned(),
         ));
     }
 
     if !command_path.is_absolute() {
-        return Err(CreateProcessError::CommandNotAbsolute(
-            rule.command.to_owned(),
-        ));
+        return Err(CreateProcessError::CommandNotAbsolute(rule.path.to_owned()));
     }
 
     unsafe {

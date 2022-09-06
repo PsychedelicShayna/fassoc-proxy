@@ -61,7 +61,7 @@ checksum = "5827cebf4670468b8772dd191856768aedcb1b0278a04f989f7766351917b9dc"
 
 [[package]]
 name = "fassoc-proxy"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "chrono",
  "log",
