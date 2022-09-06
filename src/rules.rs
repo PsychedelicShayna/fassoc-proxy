@@ -235,7 +235,7 @@ pub struct Extras {
     pub y_count_chars: Option<u32>,
     pub fill_attribute: Option<Vec<sj::Value>>,
     pub flags: Option<Vec<sj::Value>>,
-    pub show_window: Option<u16>,
+    pub show_window: Option<Vec<sj::Value>>,
 }
 
 // impl Extras {}
