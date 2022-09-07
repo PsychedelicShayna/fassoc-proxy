@@ -85,9 +85,171 @@ If any type of file other than a `txt` file is opened, then the fallback `"*"` m
 
 * Notice how the arguments string for each command contains `~~$0` and `~~$1` - these refer to the command line arguments received by FASSOC Proxy when it was launched, e.g. `~~$N` where `N` is the argument index. By default, `~~$0` will always contain the path to FASSOC Proxy - **Windows requires that this always be included at the start of the arguments string, as the program will most likely crash without it** (I would have made it implicit, but figured more control is better than less), and `~~$1` will always contain the path to the file being opened if it was opened with FASSOC Proxy. 
 
-* Command line argument substitution is available for the following strings:
-  * "commands/.../path"
-  * "commands/.../arguments"
-  * "commands/.../cwd"
-  * "extras/desktop"
-  * "extras/title"
+* Command line argument substitution is available for the following strings, where `...` is the command name.
+  * `commands/.../path`
+  * `commands/.../arguments`
+  * `commands/.../cwd`
+  * `commands/.../extras/desktop`
+  * `commands/.../extras/title`
+
+## Complete Configuration Reference
+Entries in the "commands" object have keys which are 1:1 WinAPI equivalents of the [CreateProcessA](https://docs.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessa) function. Naturally, not every argument makes sense to map into JSON (e.g. specifying the stdin/stdout/stderr handle in the [STARTUPINFOA](https://docs.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfoa) struct) but everything that makes sense to map has been mapped. You can learn about what these options do by looking at the WinAPI documentation, as the JSON values will be fed directly into the call to `CreateProcessA`.
+
+If a comment is formatted like this: `FunctionName(ArgumentName)` then the key/value is the JSON equivalent of an argument called `ArgumentName` belonging to the WinAPI function called `FunctionName`. If the comment is formatted like this: `TypeName::PropertyName` then the key/value is the JSON equivalent of a property called `PropertyName` belonging to the WinAPI type/struct called `TypeName`.
+
+For JSON keys that are WinAPI equivalents, it is recommended that you read the relevant WinAPI documentation if you intend to use them.
+
+The way bitmasks are formulated in JSON is via a list of strings representing different flags, with names that are 1:1 identical to what you would find in WinAPI. For example, a fill attribute of `FOREGROUND_RED | FOREGROUND_INTENSITY` in WinAPI would be represented as `["FOREGROUND_RED", "FOREGROUND_INTENSITY"]` in JSON, that is to say, all of the values that the strings represent are bitwise OR'd together. If the list contains a number, the number will be untouched, and simply OR'd with the rest of the string values.
+
+```js
+{
+    "mappings": {
+        // A mapping, where "txt" can be any file extension. The value being
+        // a list of strings, that are either names of matchers, or names of
+        // commands. If the name is that of a command, then the command is
+        // invoked directly without any checks. If there is both a matcher
+        // and a command by the same name, the matcher takes priority.
+        // If the name is that of a matcher, then the command that is
+        // associated with the matcher is invoked if the matcher's checks
+        // pass, and if it fails, then the matcher is skipped and the next
+        // matcher is checked. Each matcher is checked in the order they appear.
+        "txt": [ "name of matcher or command" ],
+
+        // Fallback mapping, used if there is no other applicable mapping.
+        "*": [ "TestMatcher", "TestCommand" ]
+    },
+
+    "matchers": {
+        "TestMatcher": {
+            // The command associated with this matcher, that will get invoked
+            // if the matcher checks pass. This is the only mandatory key for
+            // a matcher, all of the condition checking keys are optional. If
+            // multiple condition keys are defined, then the conditions are
+            // AND-ed together, meaning that all of the conditions must pass
+            "command": "TestCommand",
+
+            // A RegEx pattern condition that matches against the name of the file being opened.
+            "regexf": "<regex string>",
+
+            // A RegEx pattern condition that matches against the contents of the file being opened.
+            "regexc": "<regex string>"
+        }
+    },
+
+    "commands": {
+        "TestCommand": {
+            // CreateProcessA(lpApplicationName): 
+            // The absolute path to the executable.
+            "path": "C:\\Windows\\System32\\cmd.exe",
+
+            // CreateProcessA(lpCommandLine)
+            // The command line argument string to pass to the program.
+            "arguments": "~~$0 ~~$1",
+
+            // CreateProcessA(lpCurrentDirectory)
+            // The working directory to use when launching the program.
+            "cwd": "~~$1\\..",
+            
+            // CreateProcessA(bInheritHandles)
+            // If true, each inheritable handle in the calling process is inherited by 
+            // the new process. If false, the handles are not inherited
+            "inherit_handles": true,
+            
+            // CreateProcessA(dwCreationFlags) (bitmask)
+            // The flags that control the priority class and the creation of the process. 
+            // Values: https://docs.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
+            "creation_flags": [
+                "CREATE_BREAKAWAY_FROM_JOB",
+                "CREATE_DEFAULT_ERROR_MODE",
+                "CREATE_NEW_CONSOLE",
+                "CREATE_NEW_PROCESS_GROUP",
+                "CREATE_NO_WINDOW",
+                "CREATE_PROTECTED_PROCESS",
+                "CREATE_PRESERVE_CODE_AUTHZ_LEVEL",
+                "CREATE_SECURE_PROCESS",
+                "CREATE_SEPARATE_WOW_VDM",
+                "CREATE_SHARED_WOW_VDM",
+                "CREATE_SUSPENDED",
+                "CREATE_UNICODE_ENVIRONMENT",
+                "DEBUG_ONLY_THIS_PROCESS",
+                "DEBUG_PROCESS",
+                "DETACHED_PROCESS",
+                "EXTENDED_STARTUPINFO_PRESENT",
+                "INHERIT_PARENT_AFFINITY",
+            ],
+
+            // CreateProcessA(lpStartupInfo)
+            // A STARTUPINFOA instance that defines additional startup properties for the process.
+            // Please view the STARTUPINFOA documentation to understand what these values do.
+            // STARTUPINFOA Documentation: https://docs.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfoa
+            "extras": {
+                // STARTUPINFOA::lpDesktop
+                "desktop": "",
+
+                // STARTUPINFOA::lpTitle
+                "title": "",
+  
+                // STARTUPINFOA::dwX
+                "x": 0,
+
+                // STARTUPINFOA::dwY
+                "y": 0,
+
+                // STARTUPINFOA::dwXSize
+                "x_size": 0,
+
+                // STARTUPINFOA::dwYSize
+                "y_size": 0,
+
+                // STARTUPINFOA::dwXCountChars
+                "x_count_chars": 0,
+
+                // STARTUPINFOA::dwYCountChars
+                "y_count_chars": 0,
+
+                // STARTUPINFOA::dwFillAttribute (bitmask)
+                "fill_attribute": [
+                    "FOREGROUND_BLUE",
+                    "FOREGROUND_RED",
+                    "FOREGROUND_GREEN",
+                    "BACKGROUND_BLUE",
+                    "BACKGROUND_RED",
+                    "BACKGROUND_GREEN",
+                    "BACKGROUND_INTENSITY",
+                    "FOREGROUND_INTENSITY",
+                    "COMMON_LVB_LEADING_BYTE",
+                    "COMMON_LVB_TRAILING_BYT",
+                    "COMMON_LVB_GRID_HORIZONTAL",
+                    "COMMON_LVB_GRID_LVERTICAL",
+                    "COMMON_LVB_GRID_RVERTICAL",
+                    "COMMON_LVB_REVERSE_VIDEO",
+                    "COMMON_LVB_UNDERSCORE",
+                    "COMMON_LVB_SBCSDBCS"
+                ],
+                
+                // STARTUPINFOA::dwFlags (bitmask)
+                "flags": [
+                    "STARTF_FORCEONFEEDBACK",
+                    "STARTF_FORCEOFFFEEDBACK",
+                    "STARTF_PREVENTPINNING",
+                    "STARTF_RUNFULLSCREEN",
+                    "STARTF_TITLEISAPPID",
+                    "STARTF_TITLEISLINKNAME",
+                    "STARTF_UNTRUSTEDSOURCE",
+                    "STARTF_USECOUNTCHARS",
+                    "STARTF_USEFILLATTRIBUTE",
+                    "STARTF_USEHOTKEY",
+                    "STARTF_USEPOSITION",
+                    "STARTF_USESHOWWINDOW",
+                    "STARTF_USESIZE",
+                    "STARTF_USESTDHANDLES"
+                ]
+            }
+        }
+    }
+}
+
+```
+
+
+
