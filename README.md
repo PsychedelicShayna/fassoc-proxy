@@ -12,13 +12,34 @@ This is a file association proxy for Windows that provides an alternative way to
 
 Windows provides no facilities that make any of that possible out of the box, which is where this proxy handler comes in. By associating files with `fassoc-proxy.exe` instead of the target program, and then defining your own custom association rules in a JSON file, you gain the aforementioned control and increased flexibility that would not be possible otherwise.
 
+## Contributing
+Pull requests are open and appreciated! If you encounter any bugs, please [open an issue](https://github.com/PsychedelicShayna/fassoc-proxy/issues), and include the log file with your issue. If you can reproduce the error, then please do so using the debug build, so that the log file includes valuable debug messages, and if the invoked process prints anything notable to the console window when using the debug build, then please include that as well. 
+
+### Priority Todo
+These features in particular are the ones I'm hoping to target next, once I have the time. They're high up on my radar, as they're crucial for a good experience. 
+
+* Taking complete control over the file type in the Windows registry.
+
+  As of right now, overriding the default handler for a file type through a file's property menu so that it uses fassoc-proxy, does not actually give fassoc-proxy "ownership" of the file type, as it's considered a temporary user-defined "override" in the registry, rather than a proper handler definition.
+
+  This will either set the icon to a generic gray executable fallback icon, or use a fallback icon defined in the registry. 
+
+  This is very far from ideal, as you'd ruin icons for your file types, unless you manually head into the registry, in combination with a tool like FileTypesMan, to set the icons and file type definitions manually, which is far from user friendly and requires quite a bit of expertise in the way file types are defined and managed in the registry.
+
+  * Once this is achieved, providing the user with the ability to select whatever icon they like for a file type should be trivial. Initially, pointing to the icon in the configuration should suffice. 
+  * For convenience and quality of life, an override folder could eventually be implemented, where icon files matching the file extension will automatically be used as the icon for that file type.
+  * Once the icons are out of the way, we could then focus on changing the file type's name and description as it's displayed in Windows Explorer, again, should be trivial if the parent bullet point has been accomplished.
+  * Providing control over the file type's appearance in the "New >" submenu of the Windows Explorer directory context menu, to create new files of that type, as well as what name the file type appears as in that submenu.
+* Porting the config format over to something more human friendly, such as YAML or TOML.
+* Creating a CLI for fassoc-proxy in order to make the process of configuring it simpler. This would avoid the need to manually configure the configuration file. An interactive TUI is also an option.
+* Employing some tamper protection features for the configuration file, so that a bad actor can't modify the configuration file such that it redirects to their application, by simply editing a file. 
+  * For now, setting admin-only permissions on the configuration file, or better yet, both the file and the folder, independently, without inheritance, should be enough. 
+  * In the future, perhaps the configuration file would need to have an accompanying signature that fassoc-proxy can safely validate in order for it to obey the configuration. This would have to be opt-in though, otherwise some might consider it a pain in the ass.
+
 ## Download
 You can go ahead and download the latest build from the [releases]() section. It is recommended that you __do not place the binary in a location that requires administrator privileges to write to__ (such as Program Files), because the log file containing vital information about potential errors in your JSON configuration cannot be created there, and there currently is no fallback path, or UAC privilege request implemented yet. Instead, place it somewhere such as `AppData\Local\fassoc-proxy\`, or `C:\Tools\fassoc-proxy\`, etc. 
 
 Each release contains a debug build as well as the main release build, with the primary difference (apart from containing debug symbols) being that the log level is lowered to debug, meaning the output to the log file will be much more verbose and contain useful debug information. A console window will also be created when using the debug build, that will show anything that the invoked process has printed to the standard output, as well as a copy of everything written to the log file.
-
-## Contributing
-Pull requests are open and appreciated! If you encounter any bugs, please [open an issue](https://github.com/PsychedelicShayna/fassoc-proxy/issues), and include the log file with your issue. If you can reproduce the error, then please do so using the debug build, so that the log file includes valuable debug messages, and if the invoked process prints anything notable to the console window when using the debug build, then please include that as well. 
 
 ## Configuration
 Configuration is done through a JSON file, whose path is provided either through an environment variable (recommended), or through a command line argument (mainly used for debugging / trying out different rule files). The environment variable should be named `FASSOC_RULES_PATH`, and should point to the JSON file containing the rules. The name of this JSON file doesn't matter, but the convention is `fassoc-rules.json`
